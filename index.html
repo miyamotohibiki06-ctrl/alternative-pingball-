@@ -159,6 +159,11 @@ canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
           <div id="mLetter" class="disabled">父からの手紙 — 500,000 POINTS</div>
         </div>
         <div id="saveInfo" class="prompt">SAVE — CHECKING...</div>
+        <div id="saveTools" class="prompt" style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
+          <button id="saveBackup" type="button" style="font:inherit;color:inherit;background:transparent;border:1px solid currentColor;padding:7px 10px;cursor:pointer">SAVE BACKUP</button>
+          <button id="loadBackup" type="button" style="font:inherit;color:inherit;background:transparent;border:1px solid currentColor;padding:7px 10px;cursor:pointer">LOAD BACKUP</button>
+          <input id="saveFileInput" type="file" accept="application/json,.json" hidden>
+        </div>
         <div class="prompt">↑/↓ or A/D — SELECT<br>SPACE / ENTER — START<br><br>A / D — FLIP<br>SPACE — LAUNCH</div>
       </div>
     </div>
@@ -188,7 +193,7 @@ canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
 "use strict";
 
 /* ============================================================
-   PINBALL SYNTH v17
+   PINBALL SYNTH v18.4
    Priority: real pinball play before extra systems.
    Core mechanics:
    - shooter lane / skill shot
@@ -246,7 +251,7 @@ const state={
   cards:[0,0,0,0,0],upperHits:[0,0,0],upperSeq:[0,0,0],upperLockLit:false,upperLockCount:0,
   upperHoldUntil:0,upperShotCooldown:[0,0,0],upperHeat:0,upperReturnAfterHold:false,upperEntries:0,upperExits:0,
   upperLoopStreak:0,upperLoopUntil:0,upperBestLoop:0,upperCenterSide:0,upperLastLoopSide:"",flowPulse:0,
-  upperReleaseUntil:0,upperEntryAt:0,upperMaxDwell:0,upperTimeouts:0,stopper:0,
+  upperReleaseUntil:0,upperEntryAt:0,upperMaxDwell:0,upperTimeouts:0,upperGateCooldownUntil:0,stopper:0,
 
   // Lower-screen progression. HARMONY is intentionally optional for survival,
   // but completing it makes the next upper visit easier and more valuable.
@@ -270,7 +275,7 @@ const state={
   causeText:"",causeUntil:0,causeStrength:0,
 
   // Safety/quality telemetry used by the built-in deterministic playtests.
-  rescueCount:0,screenTransitions:0,flipperContacts:0,slingsHit:0,
+  rescueCount:0,screenTransitions:0,flipperContacts:0,slingsHit:0,routeBumperBreaks:0,lastRouteBroken:"",
   bumperHits:0,targetHits:0,shotCounts:Object.create(null),
   ballStartedAt:0,ballDurations:[],playStartedAt:0,
 
@@ -314,6 +319,10 @@ const song={
   harmonyIndex:0,
   harmonySerial:0,
   harmonyChangedAt:0,
+  harmonyChapter:0,
+  harmonyChapterPending:0,
+  harmonyChapterChanges:0,
+  harmonyChapterAt:0,
   harmonyAnchorAt:0,
   harmonyAnchorCoreBar:0,
   harmonyAnchorStep:0,
@@ -505,6 +514,16 @@ const song={
   raceHeat:0,
   racePickupCount:0,
 
+  // MINIGAME -> ARRANGEMENT
+  // Every cleared minigame permanently owns one audible layer in the main song.
+  miniMusicMask:0,
+  miniMusicDebutBit:-1,
+  miniMusicDebutBars:0,
+  musicGetUntil:0,
+  musicGetTitle:"",
+  musicGetText:"",
+  musicGetRole:"",
+
   // CHAPTER 3 / PULSE KINGDOM
   kingdomUnlocked:0,
   kingdomClears:0,
@@ -583,8 +602,9 @@ const MINI_SAVE_KEY="pinballSynthMiniGameV8";
 
 function defaultMiniSave(){
   return {
-    version:8,
+    version:16,
     stage:"BREAKOUT",
+    gameMode:"A",
     brokenMask:0,
     breakoutCleared:false,
     phraseUnlocked:false,
@@ -603,7 +623,14 @@ function defaultMiniSave(){
     encoreIndex:0,
     fatherPoints:0,
     letterRead:false,
-    stagePerfects:{}
+    stagePerfects:{},
+    arcadeCheckpoints:{},
+    raceResume:{distanceM:0,checkpoints:0,combo:0,nearMisses:0,crashes:0},
+    musicMask:0,
+    lastMusicRole:"",
+    lastStageId:"BREAKOUT",
+    lastSavedAt:0,
+    saveSerial:0
   };
 }
 
@@ -615,18 +642,56 @@ function loadMiniSave(){
     if(!raw){miniSave=defaultMiniSave();return miniSave}
     const parsed=JSON.parse(raw);
     miniSave=Object.assign(defaultMiniSave(),parsed||{});
+    if(!miniSave.stagePerfects||typeof miniSave.stagePerfects!=="object")miniSave.stagePerfects={};
+    if(!miniSave.arcadeCheckpoints||typeof miniSave.arcadeCheckpoints!=="object")miniSave.arcadeCheckpoints={};
+    if(!miniSave.raceResume||typeof miniSave.raceResume!=="object")miniSave.raceResume={distanceM:0,checkpoints:0,combo:0,nearMisses:0,crashes:0};
+    // V21: old saves keep every musical layer corresponding to already-cleared story stages.
+    ["STATIC","CLIMBER","TEMPEST","LANDER","JOUST","BUBBLE","HOCKEY","ROPE","DARUMA"].forEach(k=>{if(miniSave.arcadeCheckpoints)delete miniSave.arcadeCheckpoints[k]});
+    const clearedForMusic=clamp(miniSave.storyStage|0,0,10);
+    const inferredMask=clearedForMusic<=0?0:((1<<clearedForMusic)-1);
+    miniSave.musicMask=((miniSave.musicMask|0)|inferredMask)&0x3ff;
+    if(clearedForMusic<10)miniSave.musicMask&=~(1<<9);
+    miniSave.version=16;
   }catch(_){
     miniSave=defaultMiniSave();
   }
   return miniSave;
 }
 
-function writeMiniSave(){
+function writeMiniSave(reason="AUTO"){
+  miniSave.version=13;
+  miniSave.gameMode=state?.game||miniSave.gameMode||"A";
+  miniSave.lastSavedAt=Date.now();
+  miniSave.saveSerial=(miniSave.saveSerial|0)+1;
   try{localStorage.setItem(MINI_SAVE_KEY,JSON.stringify(miniSave))}catch(_){}
+  const el=document.querySelector("#saveInfo");
+  if(el&&state?.mode!==MODE.TITLE){
+    el.dataset.lastSaveReason=reason;
+  }
+}
+
+function getArcadeCheckpoint(id){
+  const a=miniSave.arcadeCheckpoints;
+  if(!a||typeof a!=="object")return null;
+  const q=a[id];
+  return q&&typeof q==="object"?q:null;
+}
+
+function setArcadeCheckpoint(id,data,reason="CHECKPOINT"){
+  if(!miniSave.arcadeCheckpoints||typeof miniSave.arcadeCheckpoints!=="object")miniSave.arcadeCheckpoints={};
+  miniSave.arcadeCheckpoints[id]=Object.assign({},data||{});
+  miniSave.lastStageId=id;
+  writeMiniSave(reason);
+}
+
+function clearArcadeCheckpoint(id){
+  if(miniSave.arcadeCheckpoints&&typeof miniSave.arcadeCheckpoints==="object")delete miniSave.arcadeCheckpoints[id];
 }
 
 function saveMiniCheckpoint(stage){
   miniSave.stage=stage;
+  miniSave.gameMode=state.game||miniSave.gameMode||"A";
+  miniSave.lastStageId=stage;
   miniSave.bonusTier=Math.max(miniSave.bonusTier|0,song.bonusTier|0);
   miniSave.drumBuild=Math.max(miniSave.drumBuild|0,song.drumBuildPending|0,song.drumBuildActive|0);
   miniSave.bestDistance=Math.max(+miniSave.bestDistance||0,+song.raceBestDistance||0);
@@ -648,6 +713,10 @@ function restoreMiniGameProgress(){
   song.raceBestDistance=Math.max(song.raceBestDistance,+miniSave.bestDistance||0);
   song.bonusPerfects=Math.max(song.bonusPerfects,miniSave.perfects|0);
   song.bonusChapterClears=Math.max(song.bonusChapterClears,miniSave.clears|0);
+  const clearedForMusic=clamp(miniSave.storyStage|0,0,10);
+  const inferredMask=clearedForMusic<=0?0:((1<<clearedForMusic)-1);
+  song.miniMusicMask=((miniSave.musicMask|0)|inferredMask)&0x3ff;
+  miniSave.musicMask=song.miniMusicMask;
 }
 
 function resetSong(){
@@ -658,6 +727,7 @@ function resetSong(){
   song.upperFxPulse=[0,0,0];song.upperFxAt=[0,0,0];
   song.emotionTier=0;song.emotionPulse=0;song.emotionPeak=0;
   song.harmonyIndex=0;song.harmonySerial=0;song.harmonyChangedAt=0;
+  song.harmonyChapter=0;song.harmonyChapterPending=0;song.harmonyChapterChanges=0;song.harmonyChapterAt=0;
   song.harmonyAnchorAt=0;song.harmonyAnchorCoreBar=0;song.harmonyAnchorStep=0;
   song.coreBar=0;song.motifMemory=0;song.motifReturn=0;
   song.upperFxMask=0;song.upperFxComboAt=0;song.wormholeUntil=0;song.wormholeCount=0;
@@ -704,6 +774,8 @@ function resetSong(){
   song.raceLastSteerDir=0;song.raceSteerBursts=0;song.raceBoost=0;song.raceBoostUntil=0;
   song.raceGateHits=0;song.raceGateMisses=0;song.racePerfectLines=0;song.raceGrooveCombo=0;
   song.raceGroovePeak=0;song.raceHeat=0;song.racePickupCount=0;
+  song.miniMusicMask=0;song.miniMusicDebutBit=-1;song.miniMusicDebutBars=0;
+  song.musicGetUntil=0;song.musicGetTitle="";song.musicGetText="";song.musicGetRole="";
   song.kingdomUnlocked=0;song.kingdomClears=0;song.kingdomDeaths=0;song.kingdomBestCheckpoint=0;
   song.kingdomBlocks=0;song.kingdomItems=0;song.kingdomSprings=0;song.kingdomEnemies=0;
   song.kingdomPerfects=0;song.kingdomRewardBars=0;
@@ -2284,7 +2356,7 @@ function scheduleBreakoutDrums(step,bar,whenMs){
   const upper=upperContributionMix();
   const hatMix=upper.w===1?(1.12+.10*upper.mastery):1;
   const percMix=upper.w===2?(1.08+.08*upper.mastery):1;
-  const surgeMix=upper.surge?1.10:1;
+  const surgeMix=(upper.surge?1.10:1)*miniMusicDebutGain("BREAKOUT");
 
   if(level>=1){
     const hats=(level>=4)?[1,5,9,13]:[2,6,10,14];
@@ -2455,7 +2527,7 @@ function raceGridIntent(){
 
 function scheduleRaceAcid(step,bar,whenMs,snap){
   const rc=raceAcidContext();
-  const reward=song.acidDriveRewardBars>0&&state.mode===MODE.PLAY;
+  const reward=(song.acidDriveRewardBars>0||miniMusicHas("DRIVE"))&&state.mode===MODE.PLAY;
   if(!rc&&!reward)return;
 
   // TRUE 16TH ARPEGGIATOR:
@@ -2533,7 +2605,8 @@ function scheduleRaceAcid(step,bar,whenMs,snap){
 
   // Slight 4-step velocity shape, but NO timing variation.
   const accent=[1.00,.70,.82,.74][gi%4];
-  const vel=(reward?.48:.66)*accent*(boost?1.08:1);
+  const roleBoost=reward?miniMusicDebutGain("DRIVE"):1;
+  const vel=(reward?.43:.66)*accent*(boost?1.08:1)*roleBoost;
 
   acidArpVoice(
     semi,
@@ -2738,11 +2811,13 @@ function kingdomEvent(kind,x,now=nowMs()){
 }
 
 function scheduleKingdomReward(step,bar,whenMs,snap){
-  if(song.kingdomRewardBars<=0 || state.mode!==MODE.PLAY)return;
+  if((song.kingdomRewardBars<=0&&!miniMusicHas("KINGDOM")) || state.mode!==MODE.PLAY)return;
   if(step%2!==0)return;
   const pattern=KINGDOM_MOTIFS[(song.bonusTier+song.guidedWorld)%KINGDOM_MOTIFS.length];
   const degree=pattern[(step/2)|0];
-  kingdomTone(chordTone(degree,3,snap),.34,whenMs,.16,(degree-2)*.10);
+  const boost=miniMusicDebutGain("KINGDOM");
+  kingdomTone(chordTone(degree,3,snap),.31*boost,whenMs,.16,(degree-2)*.10);
+  if(step===0||step===8)chipPulse(chordTone(degree,4,snap),.22*boost,whenMs,.07,step===0?-.22:.22,.72);
 }
 
 
@@ -2793,10 +2868,11 @@ function scheduleTransportStep(step,bar,whenMs){
   const qt=whenMs,bar16=bar%16;
   twUpdateGestureInterpreter(whenMs);
   song.coreBar=bar16;
+  maybeAdvanceHarmonyChapter(step,bar,whenMs);
   song.harmonyAnchorAt=whenMs;
   song.harmonyAnchorCoreBar=bar16;
   song.harmonyAnchorStep=step;
-  setHarmonyIndex(CORE_HARMONY_SEQUENCE[bar16],whenMs);
+  setHarmonyIndex(progressionForChapter()[bar16],whenMs);
   const snap=harmonySnapshotForWhen(whenMs);
 
   // World changes only on bar boundaries, just like a background-track context switch.
@@ -2853,8 +2929,28 @@ function scheduleTransportStep(step,bar,whenMs){
   }
   scheduleSpectacleBody(step,bar,qt,snap);
   scheduleStoryMemory(step,bar,qt,snap);
+
+  // SCORE-DRIVEN FORM DEVELOPMENT. Harmony changes are the main event; these
+  // sparse layers make each chapter audibly different without adding timing chaos.
+  const hChapter=song.harmonyChapter|0;
+  if(hChapter>=1 && step===8 && bar%2===1){
+    ambientGlassSemi(chordTone(4,3,snap),.075+.012*hChapter,.42,.28,qt,.54+.05*hChapter);
+  }
+  if(hChapter>=2 && (step===6||step===14)){
+    const d=step===6?2:4;
+    chipPulse(chordTone(d,3,snap),.13+.018*hChapter,qt,.07,step===6?-.28:.28,.52+.06*hChapter);
+  }
+  if(hChapter>=3 && step===0 && bar%2===0){
+    warmVoiceSemi(chordTone(0,-2,snap),.036,.90,-.10,-.32,qt);
+    warmVoiceSemi(chordTone(2,-1,snap),.021,.78,.12,-.25,qt+.03);
+  }
+  if(hChapter>=4 && (step===4||step===12)){
+    airShimmer(chordTone(step===4?2:4,4,snap),.10,qt,.34,step===4?-.24:.24);
+  }
+
   scheduleKingdomReward(step,bar,qt,snap);
   scheduleKingdomChip(step,bar,qt,snap);
+  scheduleMiniGameMusicLayers(step,bar,qt,snap);
   scheduleFeaturePhrase(step,bar,qt,snap);
   scheduleRaceAcid(step,bar,qt,snap);
   scheduleRaceObstacle(step,bar,qt);
@@ -2879,6 +2975,10 @@ function scheduleTransportStep(step,bar,whenMs){
     if(song.ascensionBars>0)song.ascensionBars--;
     if(song.worldCommitBars>0)song.worldCommitBars--;
     if(song.upperSurgeBars>0)song.upperSurgeBars--;
+    if(song.miniMusicDebutBars>0){
+      song.miniMusicDebutBars--;
+      if(song.miniMusicDebutBars<=0)song.miniMusicDebutBit=-1;
+    }
     song.upperMixLift=lerp(song.upperMixLift,(song.worldCommitBars>0||song.upperSurgeBars>0)?1:0,.35);
     song.bedBloom=song.bloomBars>0||song.ascensionBars>0||song.worldCommitBars>0;
     // Hidden reward release only on 8-bar boundaries.
@@ -3020,14 +3120,25 @@ let audioReady=false,lastClock=0,clockStep=0;
 // Four-bar field: Cmaj9 → Em11 → Am9 → Fmaj9(#11-ish color via B).
 const THEORY_SCALE=[0,2,4,5,7,8,9,11,12,14,16,17,19,20,21,23];
 const HARMONY=[
-  [9,12,16,19,23],   // Am7(add9)
-  [5,9,12,16,21],    // Fmaj7(add6)
-  [0,4,7,11,14],     // Cmaj7(add9)
-  [7,11,14,19,21],   // G6(add9)
-  [9,12,16,21,23],   // Am9 color
-  [5,9,12,19,21],    // F6/9
-  [0,4,7,14,16],     // C6/9
-  [7,11,14,16,23]    // G add6
+  [9,12,16,19,23],   // 0 Am7(add9)
+  [5,9,12,16,21],    // 1 Fmaj7(add6)
+  [0,4,7,11,14],     // 2 Cmaj7(add9)
+  [7,11,14,19,21],   // 3 G6(add9)
+  [9,12,16,21,23],   // 4 Am9 color
+  [5,9,12,19,21],    // 5 F6/9
+  [0,4,7,14,16],     // 6 C6/9
+  [7,11,14,16,23],   // 7 G add6
+  [2,5,9,12,16],     // 8 Dm9
+  [10,14,17,21,24],  // 9 Bbmaj9
+  [7,10,14,17,21],   // 10 Gm9
+  [3,7,10,14,17],    // 11 Ebmaj9
+  [0,3,7,10,14],     // 12 Cm9
+  [8,12,15,19,22],   // 13 Abmaj9
+  [5,8,12,15,19],    // 14 Fm9
+  [2,6,9,13,16],     // 15 Dmaj9
+  [9,13,16,21,23],   // 16 Aadd9
+  [11,14,18,21,23],  // 17 Bm7(add9)
+  [7,11,14,18,21]    // 18 Gmaj9
 ];
 const audioStats={collisions:0,queued:0,deduped:0,voices:0};
 const harmonyAudit={
@@ -3267,7 +3378,54 @@ function setHarmonyIndex(index,now=nowMs()){
   }
 }
 function currentChord(){return HARMONY[song.harmonyIndex%HARMONY.length]}
-const CORE_HARMONY_SEQUENCE=[0,0,1,1,2,2,3,3, 4,4,5,5,6,6,7,7];
+const SCORE_HARMONY_THRESHOLDS=[0,30000,120000,280000,420000];
+const SCORE_HARMONY_NAMES=["HOME","OPEN SKY","DISTANCE","NIGHT MEMORY","RETURN"];
+const HARMONY_PROGRESSIONS=[
+  // 0–29,999: familiar home field.
+  [0,0,1,1,2,2,3,3, 4,4,5,5,6,6,7,7],
+  // 30,000+: same tonal world, reordered so the song clearly opens.
+  [5,5,3,3,2,2,4,4, 1,1,7,7,6,6,0,0],
+  // 120,000+: Dm/Bb/F/C family — first unmistakable emotional turn.
+  [8,8,9,9,1,1,2,2, 8,8,9,9,3,3,2,2],
+  // 280,000+: modulation into Cm/Ab/Eb/Gm — darker memory chapter.
+  [12,12,13,13,11,11,10,10, 12,12,14,14,13,13,10,10],
+  // 420,000+: D/Bm/G/A — brighter final ascent before the letter.
+  [15,15,17,17,18,18,16,16, 15,15,18,18,16,16,16,16]
+];
+function harmonyChapterForScore(score=state.score){
+  let c=0;
+  for(let i=1;i<SCORE_HARMONY_THRESHOLDS.length;i++)if(score>=SCORE_HARMONY_THRESHOLDS[i])c=i;
+  return c;
+}
+function progressionForChapter(chapter=song.harmonyChapter){
+  return HARMONY_PROGRESSIONS[clamp(chapter|0,0,HARMONY_PROGRESSIONS.length-1)];
+}
+function commitHarmonyChapter(chapter,now=nowMs()){
+  chapter=clamp(chapter|0,0,HARMONY_PROGRESSIONS.length-1);
+  if(chapter===song.harmonyChapter)return false;
+  song.harmonyChapter=chapter;
+  song.harmonyChapterPending=chapter;
+  song.harmonyChapterChanges++;
+  song.harmonyChapterAt=now;
+  song.sceneShiftUntil=Math.max(song.sceneShiftUntil,now+1800);
+  song.sceneShiftLabel=`HARMONY / ${SCORE_HARMONY_NAMES[chapter]}`;
+  eventFlash(`${SCORE_HARMONY_NAMES[chapter]} / NEW PROGRESSION`,now,1500,.88);
+  causeFlash(`${SCORE_HARMONY_THRESHOLDS[chapter].toLocaleString()} SCORE`,`CHORD PROGRESSION SHIFT`,now,1500,.82);
+  // Clear old spatial residue so the modulation reads as intentional.
+  if(audioReady){
+    delayFbL.gain.setTargetAtTime(.08,AC.currentTime,.02);
+    delayFbR.gain.setTargetAtTime(.08,AC.currentTime,.02);
+    revGain.gain.setTargetAtTime(.22,AC.currentTime,.04);
+  }
+  return true;
+}
+function maybeAdvanceHarmonyChapter(step,bar,now=nowMs()){
+  const target=harmonyChapterForScore(state.score);
+  song.harmonyChapterPending=target;
+  // Musical changes wait for a four-bar boundary instead of jumping mid-phrase.
+  if(step===0 && bar%4===0 && target!==song.harmonyChapter)commitHarmonyChapter(target,now);
+}
+
 const CORE_VOICINGS=[
   [-15,-8,-3,4],    // Am open
   [-19,-12,-3,4],   // F
@@ -3289,7 +3447,7 @@ function harmonyIndexForWhen(whenMs=nowMs()){
   const absoluteStep=song.harmonyAnchorStep+deltaSteps;
   const barAdvance=Math.floor(absoluteStep/16);
   const futureCore=(song.harmonyAnchorCoreBar+barAdvance)%16;
-  return CORE_HARMONY_SEQUENCE[futureCore];
+  return progressionForChapter(song.harmonyChapter)[futureCore];
 }
 function harmonySnapshotForWhen(whenMs=nowMs()){
   const index=harmonyIndexForWhen(whenMs);
@@ -3952,6 +4110,7 @@ function beginFatherEnding(now){
   arcadeLeftPressed=false;
   arcadeRightPressed=false;
   arcadeActionPressed=false;
+  arcadeActionDown=false;
 
   // Let the current sound dissolve instead of cutting instantly.
   if(audioReady&&master){
@@ -4285,7 +4444,8 @@ const ball={x:850,y:760,prevX:850,prevY:760,vx:0,vy:0,r:10,phase:PHASE.WAIT,trai
 const plunger={x:850,restY:790,y:790,prevY:790,vy:0,charge:0,charging:false,firing:false,travel:74,headW:44,headH:10,lastCharge:.5};
 let leftDown=false,rightDown=false;
 let bonusJumpDown=false,bonusJumpPressed=false;
-let arcadeLeftPressed=false,arcadeRightPressed=false,arcadeActionPressed=false;
+let arcadeLeftPressed=false,arcadeRightPressed=false,arcadeActionPressed=false,arcadeActionDown=false;
+let staticSoftDropDown=false,staticRotateCWPressed=false,staticRotateCCWPressed=false,staticHoldPressed=false;
 
 function makeFlipper(x,y,len,rest,up){return{x,y,len,rest,up,a:rest,prevA:rest,omega:0,r:11}}
 const FIELD={left:190,right:800,center:495,top:150,bottom:838};
@@ -4311,10 +4471,12 @@ const lowerRails=[
 ];
 const upperRails=[
  [190,150,190,838],
- [190,150,260,150],
- [390,150,445,150],
- [545,150,600,150],
- [730,150,800,150],
+ // v18.1: much wider physical crown openings. The upper game should invite shots,
+ // not turn the top edge into a pinball comb.
+ [190,150,235,150],
+ [410,150,430,150],
+ [560,150,580,150],
+ [755,150,800,150],
  [800,150,800,838]
 ];
 
@@ -4327,20 +4489,18 @@ const NOTE_LANES=[
  {x:265,n:"C"},{x:380,n:"E"},{x:495,n:"G"},{x:610,n:"B"},{x:725,n:"D"}
 ];
 const upperBumpers=[
- // Visible radius stays unchanged; hitR is deliberately a little larger.
- // Fast pinball should feel generous, not pixel-perfect.
- {x:350,y:300,r:48,hitR:57,k:"DIVE",cool:0,assistR:122},
- {x:640,y:300,r:48,hitR:57,k:"DRIFT",cool:0,assistR:122},
- {x:495,y:438,r:54,hitR:65,k:"ASCEND",cool:0,assistR:136}
+ // v18.1: three pop bumpers are arranged BETWEEN the three top shot corridors.
+ // They remain large/solid, but no longer sit directly under DREAM / COMMIT / DRIVE.
+ {x:390,y:350,r:44,hitR:44,k:"DIVE",cool:0,popKick:360,popRestitution:.94},
+ {x:600,y:350,r:44,hitR:44,k:"DRIFT",cool:0,popKick:360,popRestitution:.94},
+ {x:495,y:560,r:46,hitR:46,k:"ASCEND",cool:0,popKick:390,popRestitution:.95}
 ];
 
 const postsLower=[
  {x:214,y:760,r:9},{x:776,y:760,r:9}
 ];
 const postsUpper=[
- {x:250,y:705,r:11},{x:740,y:705,r:11},
- // A center pin between the upper flippers prevents cheap straight-down exits.
- {x:495,y:704,r:11}
+ {x:250,y:705,r:10},{x:740,y:705,r:10}
 ];
 
 const slings=[
@@ -4424,7 +4584,7 @@ function pointSegmentDistance(px,py,ax,ay,bx,by){
   return {d:Math.hypot(px-x,py-y),x,y,t};
 }
 function upperAssist(o){
-  // v17.6: no magnetic correction. The visible circle IS the collision circle.
+  // v17.8: no magnetic correction. The visible circle IS the collision circle.
   // Reliability comes from continuous collision detection, not invisible attraction.
 }
 function sweptCircleTOI(cx,cy,rr,ax,ay,bx,by){
@@ -4449,9 +4609,9 @@ function upperCircleContact(o){
   const t=sweptCircleTOI(o.x,o.y,rr,ball.prevX,ball.prevY,ball.x,ball.y);
   return t===null?null:{t,inside:false};
 }
-function resolveUpperCircleExact(o,re=.91,radialKick=150){
+function resolveUpperCircleExact(o,re=.88,radialKick=330){
   const rr=ball.r+o.r;
-  let hit=upperCircleContact(o);
+  const hit=upperCircleContact(o);
   if(!hit)return false;
 
   let hx,hy;
@@ -4466,22 +4626,45 @@ function resolveUpperCircleExact(o,re=.91,radialKick=150){
 
   let nx=hx-o.x,ny=hy-o.y,nd=Math.hypot(nx,ny)||1;
   nx/=nd;ny/=nd;
-  ball.x=o.x+nx*(rr+.08);ball.y=o.y+ny*(rr+.08);
+  ball.x=o.x+nx*(rr+.12);ball.y=o.y+ny*(rr+.12);
 
+  const tx=-ny,ty=nx;
   const vn=ball.vx*nx+ball.vy*ny;
-  // Only reflect motion entering the circle. Penetration correction alone must not
-  // reverse a ball that is already moving away.
+  const vt=ball.vx*tx+ball.vy*ty;
+
+  // A pop bumper is intentionally different from a passive post:
+  // preserve most tangent motion, reverse the inward normal velocity, then
+  // enforce a strong but bounded outward component. This makes the three
+  // circles unmistakably REPEL the ball instead of merely correcting overlap.
   if(vn<0){
-    ball.vx-=(1+re)*vn*nx;
-    ball.vy-=(1+re)*vn*ny;
-    const impact=clamp((-vn)/760,.10,1);
-    const kick=radialKick*(.55+.45*impact);
-    ball.vx+=nx*kick;ball.vy+=ny*kick;
+    const impact=clamp((-vn)/760,.08,1);
+    const outward=Math.max((-vn)*re + radialKick*(.72+.28*impact), radialKick*.92);
+    const tangent=vt*.94;
+    ball.vx=tx*tangent + nx*outward;
+    ball.vy=ty*tangent + ny*outward;
+  }else{
+    // Already moving out: only separate; never reverse back into the bumper.
+    const outward=Math.max(vn,radialKick*.30);
+    ball.vx=tx*(vt*.97)+nx*outward;
+    ball.vy=ty*(vt*.97)+ny*outward;
   }
 
-  const cap=state.game==='B'?1160:1030;
-  const sp=Math.hypot(ball.vx,ball.vy);
+  const cap=state.game==='B'?1180:1060;
+  let sp=Math.hypot(ball.vx,ball.vy);
   if(sp>cap){const q=cap/sp;ball.vx*=q;ball.vy*=q}
+
+  // Defensive invariant: a successful pop-bumper solve may NEVER leave the ball
+  // travelling back into the circle, regardless of route release / numeric edge cases.
+  const postDx=ball.x-o.x,postDy=ball.y-o.y,postD=Math.hypot(postDx,postDy)||1;
+  const postNx=postDx/postD,postNy=postDy/postD;
+  let postVn=ball.vx*postNx+ball.vy*postNy;
+  if(postVn<radialKick*.28){
+    const add=radialKick*.28-postVn;
+    ball.vx+=postNx*add;
+    ball.vy+=postNy*add;
+    sp=Math.hypot(ball.vx,ball.vy);
+    if(sp>cap){const q=cap/sp;ball.vx*=q;ball.vy*=q}
+  }
   return true;
 }
 function circleCollideRadius(o,collisionR,re=.82,boost=0){
@@ -4560,40 +4743,43 @@ function updateFlippers(dt){
   flipperCollision(pair[0],leftDown);flipperCollision(pair[1],rightDown);
 }
 function activeBumper(o,now){
-  if(now<o.cool)return;
   const upper=state.screen===SCREEN.UPPER;
-  const boost=upper?165:255;
-  const restitution=upper?.91:.86;
+  const boost=upper?(o.popKick||420):255;
+  const restitution=upper?(o.popRestitution??.96):.86;
   const preSpeed=Math.hypot(ball.vx,ball.vy);
+
+  // IMPORTANT: collision happens BEFORE checking cooldown.
+  // This keeps the object permanently solid while still preventing audio/score spam.
   const collided=upper
-    ?circleCollideRadius(o,o.hitR||o.r,restitution,boost)
+    ?resolveUpperCircleExact(o,restitution,boost)
     :circleCollide(o,restitution,boost);
-  if(collided){
-    o.cool=now+(upper?105:90);
-    if(upper){
-      const bi=upperBumpers.indexOf(o);
-      if(bi>=0){
-        state.upperHits[bi]=1;
-        unlockFX(bi,now);
-        triggerUpperCircleFX(bi,clamp(preSpeed/1050,.18,1),now);
-        registerUpperFxHit(bi,now);
-      }
-      if(o===upperBumpers[2] && state.upperLockLit){
-        collectUpperLock(now);
-        return;
-      }
-      // Bumpers are the beginner path through the upper objective;
-      // the three top lanes are the higher-value precision path.
-      if(bi===0 && !state.upperSeq[0])upperShot(0,'WAVE',260,now);
-      if(bi===1 && !state.upperSeq[2])upperShot(2,'FM',260,now);
-      if(bi===2 && !state.upperSeq[1])upperShot(1,'FILTER',320,now);
+  if(!collided)return false;
+
+  // During reward cooldown: physics already resolved, so simply stop here.
+  if(now<o.cool)return true;
+
+  o.cool=now+(upper?105:90);
+  const bi=upper?upperBumpers.indexOf(o):-1;
+  if(upper){
+    if(bi>=0){
+      state.upperHits[bi]=1;
+      unlockFX(bi,now);
+      triggerUpperCircleFX(bi,clamp(preSpeed/1050,.18,1),now);
+      registerUpperFxHit(bi,now);
     }
-    state.bumperHits++;
-    juiceReward("snap",o.x,o.y,upper?.62:.48,"");
-    composerEvent("bumper",0,now);
-    addScore(180,now);
-    soundEvent(o.k,.65,o.x); // parameter modulation only; collision already made the note
+    if(bi===0 && !state.upperSeq[0])upperShot(0,'WAVE',260,now);
+    if(bi===1 && !state.upperSeq[2])upperShot(2,'FM',260,now);
+    if(bi===2 && !state.upperSeq[1])upperShot(1,'FILTER',320,now);
   }
+  state.bumperHits++;
+  if(upper){
+    juiceRing(o.x,o.y,.72,bi===0?C.accent:(bi===1?C.cool:C.green));
+    juiceReward("snap",o.x,o.y,.68,"");
+  }else juiceReward("snap",o.x,o.y,.48,"");
+  composerEvent("bumper",0,now);
+  addScore(180,now);
+  soundEvent(o.k,.65,o.x);
+  return true;
 }
 function hitSling(s,now){
   if(now<s.cool)return;
@@ -4739,9 +4925,11 @@ function collectUpperLock(now){
   state.upperLoopUntil=0;
   state.upperLastLoopSide="";
   state.upperReleaseUntil=0;
-  state.upperHoldUntil=now+480;
-  state.upperReturnAfterHold=true;
-  ball.vx=ball.vy=0;
+
+  // v18: CENTER progress must never freeze or teleport the ball.
+  // The top-center gate returns it to the playfield under ordinary velocity.
+  state.upperHoldUntil=0;
+  state.upperReturnAfterHold=false;
   commitUpperArrangement(now);
   composerEvent('center',state.releaseCycle,now);
   musicalAccent("center",.78,ball.x,ball.y,now);
@@ -4901,51 +5089,65 @@ function upperShotMouthCross(x0,x1,yLine,pad=12){
     (ball.y<yLine+18&&ball.prevY>=yLine-36&&ball.x>=x0-pad&&ball.x<=x1+pad);
 }
 
+function physicalUpperGateReturn(kind,now){
+  // The ball has genuinely crossed the top gate. Keep its horizontal momentum,
+  // reverse only the upward component, and place it just inside the visible field.
+  // No Bezier, no scripted route, no velocity overwrite on later frames.
+  const speed=Math.hypot(ball.vx,ball.vy);
+  const down=clamp(Math.max(300,Math.abs(ball.vy)*.72),300,660);
+  let bias=0;
+  if(kind==="L")bias=95;
+  else if(kind==="R")bias=-95;
+  ball.y=166;
+  ball.vy=down;
+  ball.vx=clamp(ball.vx*.72+bias,-420,420);
+  const sp=Math.hypot(ball.vx,ball.vy),cap=state.game==="B"?920:850;
+  if(sp>cap){const q=cap/sp;ball.vx*=q;ball.vy*=q}
+  state.upperGateCooldownUntil=now+170;
+  return true;
+}
 function upperTopShots(now){
-  if(ball.route)return false;
-  if(state.upperHoldUntil){
-    ball.vx=ball.vy=0;
-    releaseUpperHold(now);
-    return true;
-  }
-  if(ball.vy>=60)return false;
+  if(state.screen!==SCREEN.UPPER||ball.phase!==PHASE.FIELD)return false;
+  if(now<(state.upperGateCooldownUntil||0))return false;
+  if(ball.vy>=0)return false;
 
-  // CENTER mouth: generous and swept. A fast ball may cross the visible gate
-  // between two 240 Hz steps and still count reliably.
-  const releaseHalf=state.game==='B'?58:74;
-  const cx0=state.upperLockLit?495-releaseHalf:405;
-  const cx1=state.upperLockLit?495+releaseHalf:585;
-  if(upperShotMouthCross(cx0,cx1,455,14) || (ball.y<470&&ball.x>cx0&&ball.x<cx1)){
+  // These are the three REAL openings in the top rail.
+  // They no longer overlap DIVE / DRIFT / ASCEND.
+  const gateY=158;
+  const leftHit=upperShotMouthCross(238,408,gateY,6);
+  const centerHit=upperShotMouthCross(432,558,gateY,6);
+  const rightHit=upperShotMouthCross(582,752,gateY,6);
+
+  if(centerHit){
     if(state.upperLockLit){
-      ball.x=495;ball.y=305;
       collectUpperLock(now);
+      physicalUpperGateReturn("C",now);
     }else{
-      upperShot(1,'CENTER',900,now);
-      state.upperCenterSide^=1;
-      startUpperCenterReturn(state.upperCenterSide===0);
+      upperShot(1,'CENTER',620,now);
       state.flowPulse=1;
+      physicalUpperGateReturn("C",now);
     }
     return true;
   }
-
-  // Orbit mouths: wider capture zones + swept crossing at y=305.
-  const leftHit=upperShotMouthCross(218,420,305,16) || (ball.y<325&&ball.x>218&&ball.x<420);
-  const rightHit=upperShotMouthCross(570,772,305,16) || (ball.y<325&&ball.x>570&&ball.x<772);
   if(leftHit){
     upperShot(0,'L ORBIT',700,now);
     registerUpperLoop('L',now);
-    startUpperOrbit('L');
+    physicalUpperGateReturn("L",now);
     return true;
   }
   if(rightHit){
     upperShot(2,'R ORBIT',700,now);
     registerUpperLoop('R',now);
-    startUpperOrbit('R');
+    physicalUpperGateReturn("R",now);
     return true;
   }
 
-  if(ball.y<95){
-    ball.y=105;ball.vy=Math.abs(ball.vy)*.54;ball.vx*=.86;
+  // Closed portions of the crown are solid even if numerical integration
+  // places the center a few pixels above the top rail.
+  if(ball.y<138){
+    ball.y=142;
+    ball.vy=Math.max(260,Math.abs(ball.vy)*.68);
+    ball.vx*=.88;
     return true;
   }
   return false;
@@ -4989,17 +5191,12 @@ function laneSensors(now){
       state.upperReleaseUntil=0;
       // CENTER UP gate is not the plunger lane. It exits through the LOWER
       // crown and re-enters A FROM ABOVE, preserving the idea of one tall table.
-      ball.x=gateX;
-      ball.y=842;
-      ball.vx=0;
-      ball.vy=-clamp(gateV*.82,560,820);
-      startBallRoute('ENTRY-GATE',
-        {x:gateX,y:842},
-        {x:gateX,y:540},
-        {x:gateX,y:90},
-        {x:prepared?495:610,y:175},
-        .72
-      );
+      // v18: upper screen starts as free physics immediately. No scripted entry rail.
+      ball.route=null;ball.routeP=null;ball.routeT=0;
+      ball.x=prepared?495:610;
+      ball.y=170;
+      ball.vx=clamp((gateX-495)*.36,-120,120);
+      ball.vy=clamp(gateV*.46,300,470);
       causeFlash("UP","TOP",now,500,.45);
       soundEvent("TRANSFER_UP",.40,ball.x);
     }
@@ -5064,17 +5261,12 @@ function transitionFromShooter(now){
     // FROM ABOVE. No diagonal mid-screen hand-off, no mid-field appearance.
     const p=clamp(plunger.lastCharge,.06,1);
     const exitY=170+(p-.5)*32;
-    ball.x=856;
-    ball.y=842;
-    ball.vx=0;
-    ball.vy=-clamp(exitSpeed*.86,740,1100);
-    startBallRoute('ENTRY',
-      {x:856,y:842},
-      {x:856,y:500},
-      {x:856,y:72},
-      {x:740-(p-.5)*120,y:exitY},
-      .78
-    );
+    // v18: crown hand-off ends at the top of A, then ordinary physics owns the ball.
+    ball.route=null;ball.routeP=null;ball.routeT=0;
+    ball.x=740-(p-.5)*120;
+    ball.y=170;
+    ball.vx=-85-(p-.5)*90;
+    ball.vy=clamp(exitSpeed*.34,300,470);
     causeFlash("LAUNCH","UP!",now,650,.65);
     soundEvent("TRANSFER_UP",.45,ball.x);
   }
@@ -5153,9 +5345,11 @@ function updateLowerGeometry(now){
   if(ball.y>900)drain(now);
 }
 function upperBumperCandidate(){
+  // PHYSICS IS NEVER COOLDOWN-GATED.
+  // A pop bumper stays solid on every simulation substep.  `o.cool` is only
+  // used to debounce score/audio/visual reward, never collision.
   let best=null,bestT=Infinity;
   for(const o of upperBumpers){
-    if(nowMs()<o.cool)continue;
     const hit=upperCircleContact(o);
     if(!hit)continue;
     const t=hit.inside?0:hit.t;
@@ -5195,20 +5389,16 @@ function updateUpperGeometry(now){
   // One bumper owns this substep. This prevents the old double-reflection case
   // where a swept bumper hit and a nearby rail/post both changed velocity.
   const owner=upperBumperCandidate();
-  if(owner)activeBumper(owner,now);
-  else{
+  const bumperOwned=owner?activeBumper(owner,now):false;
+  if(!bumperOwned){
     upperRails.forEach(r=>staticSegment(...r,.79,0));
     postsUpper.forEach(p=>circleCollide(p,.78,0));
+
+    // v18.1 OPEN UPPER: no hidden inner guide rails.
+    // The three top openings plus the three visible pop bumpers define the play.
+    staticSegment(205,600,270,700,.77,0);
+    staticSegment(785,600,720,700,.77,0);
   }
-
-  // Three real shot mouths. The openings in upperRails correspond exactly to these guides.
-  staticSegment(225,300,270,235,.82,0); staticSegment(270,235,325,165,.82,0);
-  staticSegment(765,300,720,235,.82,0); staticSegment(720,235,665,165,.82,0);
-  staticSegment(425,270,455,165,.80,0); staticSegment(565,270,535,165,.80,0);
-
-  // Long return guides create predictable feeds without enclosing sharp pockets.
-  staticSegment(205,565,270,700,.77,0);
-  staticSegment(785,565,720,700,.77,0);
 
   upperTopShots(now);
 
@@ -5252,11 +5442,10 @@ function updatePhysics(dt,now){
   updatePlunger(dt,now);updateFlippers(dt);
   if(ball.phase===PHASE.WAIT)return;
 
-  // A ball inside an orbit/return rail follows that physical lane continuously.
-  // This replaces the old same-screen position teleport.
-  if(ball.phase===PHASE.FIELD&&state.screen===SCREEN.UPPER&&ball.route){
-    updateBallRoute(dt);
-    return;
+  // v18: no scripted motion exists on the upper playfield.
+  // Defensive cleanup for saves created by older builds.
+  if(state.screen===SCREEN.UPPER&&ball.route){
+    ball.route=null;ball.routeP=null;ball.routeT=0;
   }
 
   // shooter lane is isolated from main playfield
@@ -5302,6 +5491,18 @@ function updatePhysics(dt,now){
 
   if(state.screen===SCREEN.LOWER)updateLowerGeometry(now);else updateUpperGeometry(now);
   laneSensors(now);
+
+  // Upper anti-stall watchdog: human play can expose low-energy pockets that random
+  // policies rarely visit. Never permit a stationary ball above the upper flippers.
+  if(state.screen===SCREEN.UPPER&&ball.phase===PHASE.FIELD&&ball.y<690&&Math.hypot(ball.vx,ball.vy)<34){
+    ball.stall+=dt;
+    if(ball.stall>.82){
+      ball.vy=Math.max(ball.vy,185);
+      ball.vx+=ball.x<FIELD.center?55:-55;
+      state.rescueCount++;
+      ball.stall=0;
+    }
+  }
 
   // Geometry safety: never allow an accidental zero-energy pocket away from the flippers.
   // A real cradle near the flippers is preserved.
@@ -5365,6 +5566,7 @@ function panel(screenNo,label){
   text(song.songNo>0?`SONG ${song.songNo}`:"SONG",24,414,6,C.muted);
   text(`${instrumentCount()}/5 INST`,126,414,5,C.muted,"right",800);
   text(`MEMORY ${scoreEmotionTier()}/${EMOTION_THRESHOLDS.length-1}`,126,405,4,C.muted,"right",800);
+  text(`HARM ${song.harmonyChapter+1}/${HARMONY_PROGRESSIONS.length}`,126,394,4,C.cool,"right",800);
   for(let i=0;i<5;i++){
     rect(24+i*21,428,15,7,i<songProgress()?C.cool:C.soft);
   }
@@ -5494,8 +5696,9 @@ function drawReactiveBackgroundFX(now=nowMs(),upper=state.screen===SCREEN.UPPER)
   const climax=now<state.surgeUntil||song.ascensionBars>0||song.twPleasureReleaseBars>0||song.emotionPulse>.72;
   if(climax){
     ctx.save();ctx.globalCompositeOperation="screen";ctx.globalAlpha=.035+.060*level;
-    const fx=state.mode===MODE.BONUS?495:clamp(ball.x||495,250,750);
-    const fy=state.mode===MODE.BONUS?450:clamp(ball.y||450,180,780);
+    // Never attach background FX to the ball. The ball must remain a clean physical object.
+    const fx=495;
+    const fy=upper?390:525;
     for(let i=0;i<10;i++){
       const a=i*Math.PI/5+now*.00018;
       line(fx+Math.cos(a)*28,fy+Math.sin(a)*28,fx+Math.cos(a)*(125+level*90),fy+Math.sin(a)*(125+level*90),i%2?accent:C.paper,.5+level*.65);
@@ -5542,10 +5745,9 @@ function drawBumper(o,i){
   const pulse=upper?(song.upperFxPulse[i]||0):0;
 
   if(upper){
-    // Rebound object: visible radius exactly matches physical collision radius.
-    // The faint outer halo is only an aim-assist field, not a wall.
-    circle(o.x,o.y,o.assistR||o.r+40,null,C.line,.45);
-    circle(o.x,o.y,o.r+7+pulse*10,null,pulse>.05?C.accent:C.line,1.0+pulse*2.2);
+    // SOLID POP BUMPER: no fake outer target ring. The visible main rim is
+    // exactly the physical boundary; only a short hit pulse may expand afterward.
+    if(pulse>.05)circle(o.x,o.y,o.r+7+pulse*10,null,C.accent,1.0+pulse*2.2);
     circle(o.x,o.y,o.r,C.soft,C.paper,2.2);
     circle(o.x,o.y,o.r*.66,null,i===1?C.accent:C.cool,1.5);
     circle(o.x,o.y,o.r*.28,C.bg,C.paper,.9);
@@ -5896,19 +6098,28 @@ function updateRewardDrop(dt,now){
   }
 }
 
-function startRaceStage(now,bar=song.transportBar){
+function startRaceStage(now,bar=song.transportBar,resume=false){
   if(state.mode!==MODE.BONUS)return;
   bonusGame.stage="RACE";
   const r=bonusGame.race;
+  const saved=(resume&&miniSave.raceResume&&typeof miniSave.raceResume==="object")?miniSave.raceResume:null;
+  const savedM=clamp(+saved?.distanceM||0,0,1999);
+
   r.started=true;r.startAt=now;r.startBar=bar;
-  r.carX=495;r.carV=0;r.distance=0;r.distanceM=0;r.targetM=2000;r.finishShown=false;r.lives=4;
-  r.obstacles=[];r.pendingSpawns=[];r.nearMisses=0;r.crashes=0;
-  r.combo=0;r.comboPeak=0;r.checkpoints=0;r.cleared=false;r.failed=false;
+  r.carX=495;r.carV=0;r.targetM=2000;r.finishShown=false;r.lives=4;
+  r.distanceM=savedM;r.distance=clamp(savedM/r.targetM,0,1);
+  r.obstacles=[];r.pendingSpawns=[];
+  r.nearMisses=Math.max(0,saved?.nearMisses|0);r.crashes=Math.max(0,saved?.crashes|0);
+  r.combo=Math.max(0,saved?.combo|0);r.comboPeak=r.combo;
+  r.checkpoints=Math.max(clamp(saved?.checkpoints|0,0,3),Math.min(3,Math.floor(savedM/500)));
+  r.cleared=false;r.failed=false;
   r.phrase=[1,0,1,2];r.phraseIndex=0;r.phraseHits=0;
 
   miniSave.raceUnlocked=true;
   miniSave.stage="RACE";
   saveMiniCheckpoint("RACE");
+
+  if(savedM>0)eventFlash(`ACID DRIVE / RESUME ${Math.floor(savedM)}m`,now,1150,.78);
 
   song.raceGrooveActive=1;
   song.raceGrooveBars=0;
@@ -6086,9 +6297,7 @@ function updateRace(dt,now){
 
       if(r.lives<=0){
         r.failed=true;song.raceFails++;
-        miniSave.bestDistance=Math.max(+miniSave.bestDistance||0,r.distance);
-        miniSave.stage="RACE"; // retry starts directly here
-        saveMiniCheckpoint("RACE");
+        snapshotCurrentStageProgress("RACE FAIL");
         leaveBonus(now,false);
         return;
       }
@@ -6099,6 +6308,11 @@ function updateRace(dt,now){
   const cp=Math.min(4,Math.floor(r.distanceM/500));
   if(cp>r.checkpoints&&cp<4){
     r.checkpoints=cp;
+    miniSave.raceResume={
+      distanceM:r.distanceM,checkpoints:r.checkpoints,combo:r.combo,
+      nearMisses:r.nearMisses,crashes:r.crashes
+    };
+    writeMiniSave("RACE CHECKPOINT");
     eventFlash(`CHECKPOINT ${cp} / ${cp*500}m`,now,850,.72);
   }
 
@@ -6115,6 +6329,7 @@ function updateRace(dt,now){
     }
 
     miniSave.raceCleared=true;
+    miniSave.raceResume={distanceM:0,checkpoints:0,combo:0,nearMisses:0,crashes:0};
     miniSave.kingdomUnlocked=true;
     miniSave.stage="KINGDOM";
     miniSave.bonusTier=song.bonusTier;
@@ -6422,18 +6637,22 @@ function finishKingdom(now){
    Fixed order. No arcade selection.
    ============================================================ */
 const STORY_STAGES=[
-  {id:"BREAKOUT",name:"BREAKOUT / BUILD",role:"DRUM ARRANGEMENT",fragment:"TRACK 01 / BUILD"},
-  {id:"DRIVE",name:"ACID DRIVE / PERFORM",role:"ARP + FILTER",fragment:"前の家の道路"},
-  {id:"KINGDOM",name:"PULSE KINGDOM / REMEMBER",role:"CHIPTUNE",fragment:"壊れたキーボード"},
-  {id:"LABYRINTH",name:"SIGNAL LABYRINTH / CHASE",role:"MEMORY TEXTURE",fragment:"雨、電車、テレビ"},
-  {id:"STATIC",name:"STATIC BLOCK / THINK",role:"HARMONY",fragment:"消えるのが嫌だった"},
-  {id:"MEMORY",name:"MEMORY CHOIR / REMEMBER HIM",role:"CHOIR + MEMORY",fragment:"前の家"},
-  {id:"DREAM",name:"DREAM TERMINAL / REBUILD",role:"WORLD TRANSFORMATION",fragment:"HOME"}
+  {id:"BREAKOUT",name:"ブロックくずし",role:"ブロックを全部こわせ！",instruction:"ブロックを全部こわせ！",controls:"A / D でバーを動かす",music:"DRUM GROOVE",musicText:"ドラムが完成して、曲が踊り始める",fragment:"TRACK 01 / BUILD"},
+  {id:"DRIVE",name:"ドライブ",role:"2000m走りきれ！",instruction:"2000m走りきれ！",controls:"A / D でハンドル",music:"ACID ARP",musicText:"16分音符のACID ARPが走り続ける",fragment:"前の家の道路"},
+  {id:"KINGDOM",name:"ジャンプアクション",role:"ゴールまで行け！",instruction:"ゴールまで行け！",controls:"A / D で移動　SPACEでジャンプ",music:"8-BIT COUNTER",musicText:"8bitの対旋律が曲の上を跳ねる",fragment:"壊れたキーボード"},
+  {id:"SHOOTER",name:"UFOシューティング",role:"敵をぜんぶ撃て！",instruction:"敵をぜんぶ撃て！",controls:"A / D で移動　SPACEで発射",music:"LEAD MELODY",musicText:"前面にリードメロディが追加される",fragment:"雨、電車、テレビ"},
+  {id:"DROP",name:"カラー落ちもの",role:"同じ色を4つつなげろ！",instruction:"同じ色を4つつなげろ！",controls:"A / D で移動　SPACEで回転",music:"CHORD PAD",musicText:"厚いコードパッドが曲を包む",fragment:"色のかたまり"},
+  {id:"MOLE",name:"もぐらたたき",role:"出たモグラを叩け！",instruction:"出たモグラを15匹叩け！",controls:"A / D で選ぶ　SPACEで叩く",music:"PERCUSSION",musicText:"細かなパーカッションがグルーヴを増やす",fragment:"ポコポコした音"},
+  {id:"HOMERUN",name:"ホームラン競争",role:"5本ホームラン！",instruction:"タイミングを合わせて5本打て！",controls:"A / D でバッター移動　SPACEでスイング",music:"BASSLINE",musicText:"太いベースラインが曲の芯を作る",fragment:"バッティングセンターの打球音"},
+  {id:"GOLDFISH",name:"金魚すくい",role:"金魚をすくえ！",instruction:"金魚を8匹すくえ！",controls:"A / D でポイ移動　SPACEですくう",music:"SHIMMER",musicText:"水面のような高音SHIMMERが広がる",fragment:"夏祭りの水面"},
+  {id:"CRANE",name:"クレーンゲーム",role:"景品を取れ！",instruction:"景品を3つ取れ！",controls:"A / D でクレーン移動　SPACEでおろす",music:"HOOK MELODY",musicText:"覚えやすいフックメロディが追加される",fragment:"ゲームセンターの景品"},
+  {id:"DARUMA",name:"だるま落とし",role:"出っ張った側から叩け！",instruction:"出っ張った積み木を6段叩き抜け！",controls:"A / D で左・右を選ぶ　SPACEで一撃",music:"BREAK FILLS",musicText:"PERFECTの打撃感が曲の節目の爆発的なドラムフィルになる",fragment:"HOME"}
 ];
 
 let storyIntroUntil=0;
 let storyIntroLabel="";
 let storyIntroSub="";
+let storyIntroMusic="";
 
 function storyAllClear(){return (miniSave.storyStage|0)>=STORY_STAGES.length}
 function currentStoryDef(){
@@ -6446,28 +6665,243 @@ function storyProgressText(){
   if(storyAllClear())return `ALL STAGES CLEAR · ENCORE ${(miniSave.encoreIndex|0)+1}`;
   return `STAGE ${(miniSave.storyStage|0)+1} / ${STORY_STAGES.length}`;
 }
+
+const MINI_MUSIC_ROLE_INDEX=Object.fromEntries(STORY_STAGES.map((d,i)=>[d.id,i]));
+
+function miniMusicBit(id){
+  const i=MINI_MUSIC_ROLE_INDEX[id];
+  return Number.isInteger(i)?i:-1;
+}
+function miniMusicHas(id){
+  const bit=miniMusicBit(id);
+  return bit>=0 && !!((song.miniMusicMask|0)&(1<<bit));
+}
+function miniMusicCount(){
+  let n=0,m=(song.miniMusicMask|0)&0x3ff;
+  while(m){n+=m&1;m>>>=1}
+  return n;
+}
+function miniMusicDebutGain(id){
+  const bit=miniMusicBit(id);
+  return song.miniMusicDebutBars>0&&song.miniMusicDebutBit===bit?1.55:1;
+}
+function unlockMiniMusicRole(id,now){
+  const bit=miniMusicBit(id);
+  if(bit<0)return;
+  const def=STORY_STAGES[bit];
+  const flag=1<<bit;
+  const wasOn=!!((miniSave.musicMask|0)&flag);
+  miniSave.musicMask=((miniSave.musicMask|0)|flag)&0x3ff;
+  miniSave.lastMusicRole=def.music||id;
+  song.miniMusicMask=miniSave.musicMask;
+  song.miniMusicDebutBit=bit;
+  song.miniMusicDebutBars=8;
+  song.musicGetUntil=now+9200;
+  song.musicGetTitle=wasOn?"MUSIC BOOST":"MUSIC GET";
+  song.musicGetRole=def.music||id;
+  song.musicGetText=def.musicText||"曲のアレンジが変化した";
+  song.sceneShiftUntil=now+4200;
+  song.sceneShiftLabel=`${song.musicGetTitle} / ${song.musicGetRole}`;
+  song.twPleasureCharge=clamp(song.twPleasureCharge+.26,0,1);
+
+  // Existing signature layers get an immediate debut window too.
+  if(id==="DRIVE")song.acidDriveRewardBars=Math.max(song.acidDriveRewardBars,8);
+  if(id==="KINGDOM")song.kingdomRewardBars=Math.max(song.kingdomRewardBars,8);
+
+  writeMiniSave("MUSIC ROLE");
+}
+
+function scheduleMiniGameMusicLayers(step,bar,whenMs,snap){
+  if(state.mode!==MODE.PLAY)return;
+
+  // 4 / UFOシューティング -> LEAD MELODY
+  if(miniMusicHas("SHOOTER") && bar%2===0){
+    const seq={0:0,3:2,6:4,10:3,14:4};
+    if(Object.prototype.hasOwnProperty.call(seq,step)){
+      const d=seq[step],boost=miniMusicDebutGain("SHOOTER");
+      ambientGlassSemi(chordTone(d,4,snap),.115*boost,.22,(step<8?-.24:.24),whenMs,.82);
+      warmVoiceSemi(chordTone(d,3,snap),.030*boost,.27,(step<8?-.12:.12),-.08,whenMs);
+    }
+  }
+
+  // 5 / カラー落ちもの -> CHORD PAD
+  if(miniMusicHas("DROP") && step===0){
+    const boost=miniMusicDebutGain("DROP");
+    [0,2,4].forEach((d,i)=>
+      warmVoiceSemi(chordTone(d,2+(i===2?1:0),snap),.030*boost,1.55,(i-1)*.26,-.16,whenMs+i*18)
+    );
+  }
+
+  // 6 / もぐらたたき -> PERCUSSION
+  if(miniMusicHas("MOLE")){
+    const boost=miniMusicDebutGain("MOLE");
+    if(step===3||step===11)drumPerc(.44*boost,whenMs,step===3?-.26:.26);
+    if(step===7||step===15)drumClap(.28*boost,whenMs);
+  }
+
+  // 7 / ホームラン競争 -> BASSLINE
+  if(miniMusicHas("HOMERUN")){
+    const bassMap={0:0,3:0,6:2,8:4,11:3,14:2};
+    if(Object.prototype.hasOwnProperty.call(bassMap,step)){
+      const d=bassMap[step],boost=miniMusicDebutGain("HOMERUN");
+      mellowBodyBass(chordTone(d,-2,snap),(.48+(step===0?.10:0))*boost,whenMs,.27,step<8?-.06:.06);
+      if((step===0||step===8)&&boost>1)deepSubHit(43,.20*boost,whenMs,.26);
+    }
+  }
+
+  // 8 / 金魚すくい -> SHIMMER
+  if(miniMusicHas("GOLDFISH") && (step===2||step===6||step===10||step===14)){
+    const d=[4,2,3,4][(step-2)/4|0],boost=miniMusicDebutGain("GOLDFISH");
+    ambientGlassSemi(chordTone(d,5,snap),.082*boost,.32,step<8?-.38:.38,whenMs,.95);
+    airShimmer(chordTone(d,5,snap),.095*boost,whenMs,.42,step<8?-.28:.28);
+  }
+
+  // 9 / クレーンゲーム -> HOOK MELODY
+  if(miniMusicHas("CRANE")){
+    const local=bar%2*16+step;
+    const hook={0:[0,3],4:[2,3],7:[4,3],10:[2,3],14:[3,4],18:[4,3],22:[2,3],27:[1,3],30:[0,4]};
+    if(hook[local]){
+      const [d,oct]=hook[local],boost=miniMusicDebutGain("CRANE");
+      chipPulse(chordTone(d,oct,snap),.50*boost,whenMs,.10,(local<16?-.20:.20),.90);
+      warmVoiceSemi(chordTone(d,oct-1,snap),.018*boost,.30,0,-.06,whenMs);
+    }
+  }
+
+  // 10 / だるま落とし -> BREAK FILLS / final arrangement punctuation
+  if(miniMusicHas("DARUMA")){
+    const boost=miniMusicDebutGain("DARUMA");
+    const debut=boost>1;
+    const fillBar=(bar%4===3)||(debut&&bar%2===1);
+    if(fillBar){
+      // The last half of the bar visibly "falls apart" and rebuilds like the toy.
+      if(step===8)drumOpenHat(.56*boost,whenMs,-.16);
+      if(step===10)drumClap(.34*boost,whenMs);
+      if(step===12){drumPerc(.42*boost,whenMs,-.22);chipNoise(.12*boost,whenMs,.020,.20);}
+      if(step===13)drumClap(.38*boost,whenMs);
+      if(step===14){drumOpenHat(.72*boost,whenMs,.18);drumPerc(.48*boost,whenMs,-.18);}
+      if(step===15){
+        drumClap(.58*boost,whenMs);
+        chipNoise(.24*boost,whenMs,.045,.28);
+      }
+    }else if(step===14){
+      // Tiny preview on ordinary bars, so the permanent unlock remains audible.
+      drumOpenHat(.38*boost,whenMs,.10);
+    }
+  }
+}
+
+// Save the live state BEFORE a failed bonus returns to the C gate.
+// C gate retries are resumes, never implicit NEW GAME operations.
+function snapshotCurrentStageProgress(reason="FAIL RETURN"){
+  const id=ARCADE15.active||currentStoryDef()?.id;
+  if(!id)return;
+
+  miniSave.lastStageId=id;
+
+  if(id==="BREAKOUT"){
+    miniSave.brokenMask=bonusMaskFromBlocks();
+    miniSave.stage="BREAKOUT";
+  }else if(id==="DRIVE"){
+    const r=bonusGame.race;
+    if(r){
+      miniSave.raceResume={
+        distanceM:clamp(+r.distanceM||0,0,r.targetM||2000),
+        checkpoints:clamp(r.checkpoints|0,0,3),
+        combo:Math.max(0,r.combo|0),
+        nearMisses:Math.max(0,r.nearMisses|0),
+        crashes:Math.max(0,r.crashes|0)
+      };
+      miniSave.bestDistance=Math.max(+miniSave.bestDistance||0,clamp((+r.distanceM||0)/(r.targetM||2000),0,1));
+    }
+    miniSave.raceUnlocked=true;
+    miniSave.stage="RACE";
+  }else if(id==="KINGDOM"){
+    const k=bonusGame.kingdom;
+    miniSave.kingdomCheckpoint=clamp((k?.checkpoint ?? miniSave.kingdomCheckpoint)|0,0,3);
+    miniSave.kingdomUnlocked=true;
+    miniSave.stage="KINGDOM";
+  }else if(id==="STATIC"){
+    const g=ARCADE15.g;
+    if(g)setArcadeCheckpoint("STATIC",{
+      lines:clamp(g.lines|0,0,5),
+      board:Array.isArray(g.board)?g.board.map(row=>row.slice(0,10)):null
+    },reason);
+    return;
+  }else if(id==="SHOOTER"){
+    const g=ARCADE15.g;
+    if(g)setArcadeCheckpoint("SHOOTER",{
+      kills:Math.max(0,g.kills|0),
+      bestCombo:Math.max(0,g.bestCombo|0)
+    },reason);
+    return;
+  }else if(id==="CLIMBER"){
+    const g=ARCADE15.g;
+    if(g)setArcadeCheckpoint("CLIMBER",{
+      height:clamp(+g.height||0,0,1799),
+      checkpoint:clamp(+g.checkpoint||0,0,1200),
+      combo:Math.max(0,g.combo|0),
+      bestCombo:Math.max(0,g.bestCombo|0),
+      fallCount:Math.max(0,g.fallCount|0)
+    },reason);
+    return;
+  }else if(id==="DROP"){
+    const g=ARCADE15.g;
+    if(g)setArcadeCheckpoint("DROP",{cleared:g.cleared|0,bestChain:g.bestChain|0},reason);
+    return;
+  }else if(id==="MOLE"){
+    const g=ARCADE15.g;
+    if(g)setArcadeCheckpoint("MOLE",{hits:g.hits|0,bestCombo:g.bestCombo|0},reason);
+    return;
+  }else if(id==="HOMERUN"){
+    const g=ARCADE15.g;
+    if(g)setArcadeCheckpoint("HOMERUN",{homeRuns:g.homeRuns|0,bestDistance:g.bestDistance|0},reason);
+    return;
+  }else if(id==="GOLDFISH"){
+    const g=ARCADE15.g;
+    if(g)setArcadeCheckpoint("GOLDFISH",{caught:g.caught|0,bestCombo:g.bestCombo|0},reason);
+    return;
+  }else if(id==="CRANE"){
+    const g=ARCADE15.g;
+    if(g)setArcadeCheckpoint("CRANE",{caught:g.caught|0,tries:g.tries|0},reason);
+    return;
+  }else if(id==="DARUMA"){
+    const g=ARCADE15.g;
+    if(g)setArcadeCheckpoint("DARUMA",{
+      removed:clamp(g.removed|0,0,6),
+      bestCombo:Math.max(0,g.bestCombo|0),
+      perfectTotal:Math.max(0,g.perfectTotal|0)
+    },reason);
+    return;
+  }
+
+  writeMiniSave(reason);
+}
+
 function storyStartCurrent(now){
   const def=currentStoryDef();
   ARCADE15.active=def.id;
-  storyIntroUntil=now+1800;
-  storyIntroLabel=def.name;
-  storyIntroSub=storyAllClear()
-    ? `ENCORE · ${def.role}`
-    : `${storyProgressText()} · ${def.role}`;
+  miniSave.lastStageId=def.id;
+  miniSave.gameMode=state.game||miniSave.gameMode||"A";
+  writeMiniSave("STAGE START");
+  storyIntroUntil=now+2400;
+  storyIntroLabel=def.instruction||def.role||def.name;
+  storyIntroSub=def.controls||"A / D + SPACE";
+  storyIntroMusic=`MUSIC → ${def.music||"ARRANGEMENT"}`;
 
   // Clean per-stage start; stage itself may still keep its internal checkpoint.
   if(def.id==="BREAKOUT"){
     bonusGame.stage="BREAKOUT";
-    buildBreakoutBlocks(0);
-    bonusGame.broken=0;bonusGame.combo=0;bonusGame.comboPeak=0;
+    const mask=miniSave.brokenMask>>>0;
+    buildBreakoutBlocks(mask);
+    bonusGame.combo=0;bonusGame.comboPeak=0;
     bonusGame.lastBlockAt=-1e9;
     bonusGame.paddleX=495;bonusGame.paddleV=0;bonusGame.paddleW=142;
     bonusGame.ball={x:495,y:690,vx:250,vy:-375,r:10};
     bonusGame.feverUntil=0;
+    if(mask)eventFlash(`BREAKOUT / RESUME ${bonusGame.broken}/24`,now,950,.72);
   }else if(def.id==="DRIVE"){
-    startRaceStage(now,song.transportBar);
+    startRaceStage(now,song.transportBar,true);
   }else if(def.id==="KINGDOM"){
-    miniSave.kingdomCheckpoint=0;
     startKingdomStage(now);
   }else{
     bonusGame.stage="AR15";
@@ -6483,6 +6917,7 @@ function storyAdvance(id,now){
   if(completed<0)return;
 
   if(!storyAllClear() && completed===(miniSave.storyStage|0)){
+    clearArcadeCheckpoint(id);
     miniSave.storyStage=completed+1;
     miniSave.storyClears=(miniSave.storyClears|0)+1;
     const frag=STORY_STAGES[completed].fragment;
@@ -6508,17 +6943,30 @@ function storyStageReward(id,now){
     [0,2,4,2,4,3].forEach((d,i)=>chipPulse(chordTone(d,3+(i>3?1:0),snap),.38,now+i*38,.07,(i-2.5)*.12,.88));
   }else if(id==="KINGDOM"){
     [0,2,4,0].forEach((d,i)=>chipPulse(chordTone(d,4+(i===3?1:0),snap),.46,now+i*45,.09,(i-1.5)*.15,.82));
-  }else if(id==="LABYRINTH"){
-    airShimmer(chordTone(4,4,snap),.32,now,.78,-.28);
-    warmVoiceSemi(chordTone(2,2,snap),.038,.65,.25,-.18,now+.08);
+  }else if(id==="SHOOTER"){
+    [0,2,4,3,4,2].forEach((d,i)=>chipPulse(chordTone(d,4+(i>3?1:0),snap),.42,now+i*42,.07,(i-2.5)*.13,.92));
+    deepSubHit(45,.14,now+.08,.24);
   }else if(id==="STATIC"){
     [0,2,4].forEach((d,i)=>warmVoiceSemi(chordTone(d,2+(i===2?1:0),snap),.052,.5,(i-1)*.2,-.04,now+i*30));
-  }else if(id==="MEMORY"){
-    [0,1,2,3,4].forEach((d,i)=>warmVoiceSemi(chordTone(d,3,snap),.032,.62,(i-2)*.16,-.08,now+i*28));
-  }else if(id==="DREAM"){
-    deepSubHit(41,.18,now,.5);
-    [0,2,4,3,4].forEach((d,i)=>warmVoiceSemi(chordTone(d,2+(i>2?1:0),snap),.05,.7,(i-2)*.15,-.04,now+i*36));
-    airShimmer(chordTone(4,5,snap),.35,now+.12,.9,.2);
+  }else if(id==="CLIMBER"){
+    [0,2,4,2,3,4].forEach((d,i)=>warmVoiceSemi(chordTone(d,3+(i>3?1:0),snap),.036,.62,(i-2.5)*.14,-.08,now+i*36));
+    airShimmer(chordTone(4,5,snap),.28,now+.1,.72,.18);
+  }else if(id==="DROP"){
+    [0,2,4].forEach((d,i)=>warmVoiceSemi(chordTone(d,3,snap),.040,.30,(i-1)*.18,-.04,now+i*28));
+  }else if(id==="MOLE"){
+    [0,2,0,4].forEach((d,i)=>chipPulse(chordTone(d,4,snap),.38,now+i*34,.055,(i-1.5)*.14,.86));
+  }else if(id==="HOMERUN"){
+    deepSubHit(43,.28,now,.34);
+    [0,4,2,4].forEach((d,i)=>warmVoiceSemi(chordTone(d,2+(i===3?1:0),snap),.050,.34,(i-1.5)*.16,-.08,now+i*34));
+  }else if(id==="GOLDFISH"){
+    [0,2,4,2].forEach((d,i)=>warmVoiceSemi(chordTone(d,4,snap),.030,.42,(i-1.5)*.16,-.10,now+i*32));
+  }else if(id==="CRANE"){
+    deepSubHit(43,.16,now,.30);
+    [0,2,4].forEach((d,i)=>chipPulse(chordTone(d,4,snap),.34,now+i*42,.06,(i-1)*.2,.82));
+  }else if(id==="DARUMA"){
+    deepSubHit(43,.24,now,.36);
+    [0,2,4,3,4,2].forEach((d,i)=>warmVoiceSemi(chordTone(d,3+(i>3?1:0),snap),.040,.30,(i-2.5)*.14,-.08,now+i*30));
+    [0,1,2,3].forEach((_,i)=>drumClap(.28+i*.07,now+90+i*55));
   }
 }
 
@@ -6537,7 +6985,16 @@ const ARCADE_DEFS=[
   {id:"WAVE",name:"WAVE SURFER",role:"LFO / MOD",ref:"forinda/canvas-games (MIT)"},
   {id:"CIRCUIT",name:"CIRCUIT HACKER",role:"FX ROUTING",ref:"remarkablegames/water-pipe (MIT)"},
   {id:"MEMORY",name:"MEMORY CHOIR",role:"VOICING",ref:"Selharem/Memoy-Card-Game (MIT)"},
-  {id:"DREAM",name:"DREAM TERMINAL",role:"MACRO WORLD",ref:"glebis/generative-sequencer / modal-16 (MIT)"}
+  {id:"TEMPEST",name:"TEMPEST RING",role:"FILTER / VECTOR",ref:"Original implementation; mechanic lineage: Atari Tempest (1981)"},
+  {id:"LANDER",name:"LUNAR LANDER",role:"SUB / GRAVITY",ref:"Original implementation; mechanic lineage: Atari Lunar Lander (1979)"},
+  {id:"JOUST",name:"FEEDBACK JOUST",role:"AIR / MOMENTUM",ref:"Original implementation; mechanic lineage: Williams Joust (1982)"},
+  {id:"BUBBLE",name:"PUZZLE ORBIT",role:"CHORD / CASCADE",ref:"legacy"},
+  {id:"DROP",name:"カラー落ちもの",role:"同じ色を4つ",ref:"original falling-pair puzzle"},
+  {id:"MOLE",name:"もぐらたたき",role:"出たら叩く",ref:"whack-a-mole"},
+  {id:"HOMERUN",name:"ホームラン競争",role:"5本打つ",ref:"Japanese batting-center / baseball timing game"},
+  {id:"GOLDFISH",name:"金魚すくい",role:"8匹すくう",ref:"Japanese festival game"},
+  {id:"CRANE",name:"クレーンゲーム",role:"景品を3つ",ref:"Japanese arcade crane-game culture"},
+  {id:"DARUMA",name:"だるま落とし",role:"出た側から一撃",ref:"traditional Japanese daruma-otoshi stacking toy; arcade smash redesign"}
 ];
 
 const ARCADE15={
@@ -6554,6 +7011,9 @@ function arcadeResetEdges(){
   arcadeLeftPressed=false;
   arcadeRightPressed=false;
   arcadeActionPressed=false;
+  staticRotateCWPressed=false;
+  staticRotateCCWPressed=false;
+  staticHoldPressed=false;
 }
 
 function arcadeOpenHub(now){
@@ -6578,17 +7038,35 @@ function arcadeFinish(id,now,label="COMPLETE"){
   if(id==="STATIC"){
     song.harmonyIndex=(song.harmonyIndex+1)%4;
     song.worldCommitBars=Math.max(song.worldCommitBars,8);
-  }else if(id==="LABYRINTH"){
-    song.archiveDepth+=2;
-    song.worldCommitBars=Math.max(song.worldCommitBars,8);
-  }else if(id==="MEMORY"){
+  }else if(id==="SHOOTER"){
     song.featurePhraseUnlocked=1;
-    song.resonanceXP+=36;
-  }else if(id==="DREAM"){
+    song.upperSurgeBars=Math.max(song.upperSurgeBars,6);
+    song.resonanceXP+=28;
+  }else if(id==="CLIMBER"){
+    song.archiveDepth+=2;
+    song.worldCommitBars=Math.max(song.worldCommitBars,10);
+    song.resonanceXP+=32;
+  }else if(id==="DROP"){
+    song.harmonyIndex=(song.harmonyIndex+1)%4;
+    song.worldCommitBars=Math.max(song.worldCommitBars,6);
+  }else if(id==="MOLE"){
+    song.resonanceXP+=24;
+  }else if(id==="HOMERUN"){
+    song.resonanceXP+=28;
+    song.twPleasureCharge=clamp(song.twPleasureCharge+.16,0,1);
+  }else if(id==="GOLDFISH"){
+    song.archiveDepth+=1;
+    song.resonanceXP+=20;
+  }else if(id==="CRANE"){
+    song.featurePhraseUnlocked=1;
+    song.twPleasureCharge=clamp(song.twPleasureCharge+.18,0,1);
+  }else if(id==="DARUMA"){
     song.worldCommitBars=Math.max(song.worldCommitBars,16);
-    song.upperSurgeBars=Math.max(song.upperSurgeBars,8);
+    song.upperSurgeBars=Math.max(song.upperSurgeBars,10);
+    song.twPleasureCharge=clamp(song.twPleasureCharge+.25,0,1);
   }
 
+  unlockMiniMusicRole(id,now);
   storyAdvance(id,now);
   leaveBonus(now,true);
 }
@@ -6602,9 +7080,9 @@ function arcadeStart(id,now){
   bonusGame.endAt=now+180000;
 
   if(id==="BREAKOUT"){
-    buildBreakoutBlocks(0);
+    buildBreakoutBlocks(miniSave.brokenMask>>>0);
     bonusGame.stage="BREAKOUT";
-    bonusGame.broken=0;bonusGame.combo=0;bonusGame.comboPeak=0;
+    bonusGame.combo=0;bonusGame.comboPeak=0;
     bonusGame.paddleX=495;bonusGame.paddleV=0;
     bonusGame.ball={x:495,y:725,vx:230,vy:-330,r:10};
     miniSave.stage="BREAKOUT";
@@ -6617,7 +7095,6 @@ function arcadeStart(id,now){
   }
   if(id==="KINGDOM"){
     bonusGame.stage="KINGDOM";
-    miniSave.kingdomCheckpoint=0;
     startKingdomStage(now);
     return;
   }
@@ -6639,44 +7116,94 @@ function arcadeInitGame(id,now){
   if(id==="WAVE")return waveInit(now);
   if(id==="CIRCUIT")return circuitInit();
   if(id==="MEMORY")return memoryInit();
-  if(id==="DREAM")return dreamInit();
+  if(id==="TEMPEST")return tempestInit();
+  if(id==="LANDER")return landerInit();
+  if(id==="JOUST")return joustInit();
+  if(id==="BUBBLE")return bubbleInit();
+  if(id==="DROP")return dropInit();
+  if(id==="MOLE")return moleInit();
+  if(id==="HOMERUN")return homerunInit();
+  if(id==="GOLDFISH")return goldfishInit();
+  if(id==="CRANE")return craneInit();
+  if(id==="DARUMA")return darumaInit();
   return {};
 }
 
 /* ---------- 01 STATIC BLOCK ---------- */
-const ST_SHAPES=[
-  [[1,1,1,1]],
-  [[1,1],[1,1]],
-  [[0,1,0],[1,1,1]],
-  [[1,0,0],[1,1,1]],
-  [[0,1,1],[1,1,0]]
-];
-function stRotate(m){return m[0].map((_,i)=>m.map(r=>r[i]).reverse())}
-function staticInit(){
-  const g={board:Array.from({length:16},()=>Array(10).fill(0)),piece:null,x:3,y:0,drop:0,lines:0,chain:0};
-  staticSpawn(g);return g;
+// Modern Tetris-style controls:
+// LEFT/RIGHT move, DOWN soft drop, UP/X rotate CW, Z rotate CCW,
+// SPACE hard drop, C/SHIFT hold.
+const ST_PIECES={
+  I:[[1,1,1,1]],
+  O:[[1,1],[1,1]],
+  T:[[0,1,0],[1,1,1]],
+  J:[[1,0,0],[1,1,1]],
+  L:[[0,0,1],[1,1,1]],
+  S:[[0,1,1],[1,1,0]],
+  Z:[[1,1,0],[0,1,1]]
+};
+const ST_NAMES=Object.keys(ST_PIECES);
+function stRotateCW(m){return m[0].map((_,i)=>m.map(r=>r[i]).reverse())}
+function stRotateCCW(m){let q=m;for(let i=0;i<3;i++)q=stRotateCW(q);return q}
+function staticMakeBag(g){
+  const a=ST_NAMES.slice();
+  // deterministic Fisher-Yates based on piece serial so replays stay stable.
+  let seed=((g.serial+1)*2654435761)>>>0;
+  for(let i=a.length-1;i>0;i--){seed=(seed*1664525+1013904223)>>>0;const j=seed%(i+1);[a[i],a[j]]=[a[j],a[i]]}
+  g.bag.push(...a);
 }
-function staticSpawn(g){
-  const idx=(g.lines+Math.floor(nowMs()/777))%ST_SHAPES.length;
-  g.piece=ST_SHAPES[idx].map(r=>r.slice());g.x=3;g.y=0;
+function staticNextName(g){if(g.bag.length<7)staticMakeBag(g);return g.bag.shift()}
+function staticInit(){
+  const cp=getArcadeCheckpoint("STATIC");
+  const savedLines=clamp(cp?.lines|0,0,5);
+  const savedBoard=Array.isArray(cp?.board)&&cp.board.length===20
+    ? cp.board.map(row=>Array.from({length:10},(_,i)=>row?.[i]?1:0))
+    : Array.from({length:20},()=>Array(10).fill(0));
+  const g={board:savedBoard,piece:null,name:'T',x:3,y:0,drop:0,lines:savedLines,chain:0,hardDrops:0,serial:0,bag:[],next:[],hold:null,holdUsed:false,lock:0};
+  while(g.next.length<5)g.next.push(staticNextName(g));
+  staticSpawn(g);
+  if(savedLines>0||cp?.board)eventFlash(`STATIC / RESUME ${savedLines}/6`,nowMs(),900,.68);
+  return g;
+}
+function staticSpawn(g,forcedName=null){
+  g.name=forcedName||g.next.shift();
+  while(g.next.length<5)g.next.push(staticNextName(g));
+  g.piece=ST_PIECES[g.name].map(r=>r.slice());
+  g.x=Math.floor((10-g.piece[0].length)/2);g.y=0;g.drop=0;g.lock=0;g.serial++;
   if(!staticValid(g,g.x,g.y,g.piece)){
-    g.board.splice(0,6);while(g.board.length<16)g.board.unshift(Array(10).fill(0));
+    // Stage is not an endless survival mode: recover without silently deleting progress.
+    g.board=Array.from({length:20},()=>Array(10).fill(0));
+    g.x=Math.floor((10-g.piece[0].length)/2);g.y=0;
     juiceImpact(495,250,.7,{label:"STACK RESET",n:18,shake:5,flash:.08});
   }
 }
 function staticValid(g,x,y,p){
   for(let r=0;r<p.length;r++)for(let c=0;c<p[r].length;c++)if(p[r][c]){
     const xx=x+c,yy=y+r;
-    if(xx<0||xx>=10||yy>=16||(yy>=0&&g.board[yy][xx]))return false;
+    if(xx<0||xx>=10||yy>=20||(yy>=0&&g.board[yy][xx]))return false;
   }
   return true;
 }
+function staticTryRotate(g,dir,now){
+  if(g.name==='O'){juiceReward("micro",495,690,.12,"");return true}
+  const rot=dir>0?stRotateCW(g.piece):stRotateCCW(g.piece);
+  // Compact SRS-style wall-kick search. The important play property is that a
+  // legal rotation near walls/floor is attempted instead of simply failing.
+  const kicks=[[0,0],[-1,0],[1,0],[-2,0],[2,0],[0,-1],[-1,-1],[1,-1],[0,-2]];
+  for(const [dx,dy] of kicks){
+    if(staticValid(g,g.x+dx,g.y+dy,rot)){
+      g.x+=dx;g.y+=dy;g.piece=rot;g.lock=0;
+      juiceReward("snap",495,690,.30,dir>0?"ROTATE ↻":"ROTATE ↺");return true;
+    }
+  }
+  return false;
+}
 function staticLock(g,now){
   for(let r=0;r<g.piece.length;r++)for(let c=0;c<g.piece[r].length;c++)if(g.piece[r][c]){
-    const yy=g.y+r,xx=g.x+c;if(yy>=0&&yy<16)g.board[yy][xx]=1;
+    const yy=g.y+r,xx=g.x+c;if(yy>=0&&yy<20)g.board[yy][xx]=1;
   }
   let cleared=0;
-  for(let r=15;r>=0;r--){
+  for(let r=19;r>=0;r--){
     if(g.board[r].every(Boolean)){g.board.splice(r,1);g.board.unshift(Array(10).fill(0));cleared++;r++}
   }
   if(cleared){
@@ -6684,23 +7211,47 @@ function staticLock(g,now){
     const p=clamp(.55+cleared*.12+g.chain*.05,0,1);
     juiceReward(cleared>=3?"power":"item",495,360,p,`${cleared} LINE`);
     song.harmonyIndex=(song.harmonyIndex+cleared)%4;
-    if(g.lines>=6)arcadeFinish("STATIC",now,"HARMONY SHIFT");
+    addScore([0,100,300,500,800][cleared]||800,now);
+    if(g.lines<6)setArcadeCheckpoint("STATIC",{lines:g.lines,board:g.board.map(row=>row.slice())},"LINE SAVE");
+    if(g.lines>=6){arcadeFinish("STATIC",now,"6 LINES CLEAR");return}
   }else g.chain=0;
-  staticSpawn(g);
+  g.holdUsed=false;staticSpawn(g);
+}
+function staticHardDrop(g,now){
+  let landing=g.y;while(staticValid(g,g.x,landing+1,g.piece))landing++;
+  const cells=Math.max(0,landing-g.y);g.y=landing;g.hardDrops++;g.drop=0;
+  if(cells>0)addScore(cells*2,now);
+  juiceReward(cells>=8?"item":"snap",495,690,clamp(.28+cells*.025,.28,.68),`HARD DROP ${cells}`);
+  staticLock(g,now);
+}
+function staticHold(g,now){
+  if(g.holdUsed)return false;
+  const current=g.name;g.holdUsed=true;
+  if(g.hold===null){g.hold=current;staticSpawn(g)}
+  else{const swap=g.hold;g.hold=current;staticSpawn(g,swap)}
+  g.holdUsed=true;juiceReward("snap",495,690,.28,"HOLD");return true;
 }
 function staticUpdate(g,dt,now){
-  if(arcadeLeftPressed&&staticValid(g,g.x-1,g.y,g.piece)){g.x--;juiceReward("micro",360,700,.18,"")}
-  if(arcadeRightPressed&&staticValid(g,g.x+1,g.y,g.piece)){g.x++;juiceReward("micro",600,700,.18,"")}
-  if(arcadeActionPressed){
-    const rot=stRotate(g.piece);
-    if(staticValid(g,g.x,g.y,rot)){g.piece=rot;juiceReward("snap",495,690,.28,"ROTATE")}
-  }
-  g.drop+=dt;
-  const interval=Math.max(.18,.48-g.lines*.03);
-  if(g.drop>=interval){
-    g.drop=0;
-    if(staticValid(g,g.x,g.y+1,g.piece))g.y++;
-    else staticLock(g,now);
+  if(arcadeLeftPressed&&staticValid(g,g.x-1,g.y,g.piece)){g.x--;g.lock=0;juiceReward("micro",360,700,.14,"")}
+  if(arcadeRightPressed&&staticValid(g,g.x+1,g.y,g.piece)){g.x++;g.lock=0;juiceReward("micro",600,700,.14,"")}
+  if(staticRotateCWPressed)staticTryRotate(g,1,now);
+  if(staticRotateCCWPressed)staticTryRotate(g,-1,now);
+  if(staticHoldPressed)staticHold(g,now);
+  if(arcadeActionPressed){staticHardDrop(g,now);return}
+
+  const grounded=!staticValid(g,g.x,g.y+1,g.piece);
+  if(grounded){
+    g.lock+=dt;
+    if(g.lock>=.48){staticLock(g,now);return}
+  }else g.lock=0;
+
+  g.drop+=dt*(staticSoftDropDown?18:1);
+  const interval=Math.max(.11,.52-g.lines*.025);
+  while(g.drop>=interval){
+    g.drop-=interval;
+    if(staticValid(g,g.x,g.y+1,g.piece)){
+      g.y++;if(staticSoftDropDown)addScore(1,now);
+    }else break;
   }
 }
 
@@ -6762,6 +7313,71 @@ function mazeChooseDir(g,intent=0){
   if(noBack.length)return noBack[(g.steps+g.found)%noBack.length];
   return open[0];
 }
+function mazeHasMemoryAt(g,x,y){
+  return g.echoes.some(e=>!e.taken&&e.x===x&&e.y===y);
+}
+function mazeRefreshChoices(g){
+  g.choices=mazeOpenDirs(g,g.x,g.y);
+  if(!g.choices.length){g.choiceIndex=0;g.selectedDir=-1;return}
+  g.choiceIndex=((g.choiceIndex||0)%g.choices.length+g.choices.length)%g.choices.length;
+  g.selectedDir=g.choices[g.choiceIndex];
+}
+function mazeBuildDashPath(g,firstDir){
+  const dirs=[[0,-1],[1,0],[0,1],[-1,0]],path=[];
+  let x=g.x,y=g.y,dir=firstDir;
+  const seen=new Set();
+  for(let guard=0;guard<g.w*g.h*2;guard++){
+    const open=mazeOpenDirs(g,x,y);
+    if(!open.includes(dir))break;
+    const nx=x+dirs[dir][0],ny=y+dirs[dir][1];
+    if(nx<0||nx>=g.w||ny<0||ny>=g.h)break;
+    path.push({x:nx,y:ny,dir});
+    x=nx;y=ny;
+    const key=`${x},${y},${dir}`;
+    if(seen.has(key))break;
+    seen.add(key);
+
+    // Stop at anything meaningful so the player gets a new decision.
+    if(mazeHasMemoryAt(g,x,y) || (g.goalOpen&&x===g.goalX&&y===g.goalY))break;
+    const nextOpen=mazeOpenDirs(g,x,y);
+    if(nextOpen.length!==2)break; // junction or dead-end
+    const back=(dir+2)%4;
+    const forward=nextOpen.find(d=>d!==back);
+    if(forward===undefined)break;
+    dir=forward;
+  }
+  return path;
+}
+function mazeCollectCell(g,now){
+  for(const e of g.echoes){
+    if(!e.taken&&e.x===g.x&&e.y===g.y){
+      e.taken=true;g.found++;g.combo++;g.bestCombo=Math.max(g.bestCombo,g.combo);
+      juiceReward("power",495,450,.84,`MEMORY / ${e.label}`);addScore(1400+g.found*450,now);
+      song.twPleasureCharge=clamp(song.twPleasureCharge+.14,0,1);
+      if(audioReady){
+        const snap=snapshotChord();deepSubHit(43+g.found*2,.19,now,.34);
+        [0,2,4].forEach((d,i)=>warmVoiceSemi(chordTone(d,1+(i===2?1:0),snap),.052+.009*g.found,.44,(i-1)*.24,-.12,now+i*28));
+        airShimmer(chordTone(4,4,snap),.14,now+82,.36,.10);
+      }
+      if(g.found>=3){g.goalOpen=true;juiceReward("power",495,450,.92,"HOME OPEN")}
+    }
+  }
+  if(g.goalOpen&&g.x===g.goalX&&g.y===g.goalY){arcadeFinish("LABYRINTH",now,"MEMORY FOUND");return true}
+  return false;
+}
+function mazeBeginDash(g,dir,now){
+  const path=mazeBuildDashPath(g,dir);
+  if(!path.length){
+    mazeRefreshChoices(g);
+    juiceImpact(495,450,.18,{label:"NO PATH",n:3,shake:.4,flash:.01});
+    return false;
+  }
+  g.dashPath=path;g.dashIndex=0;g.dashT=0;g.dashing=true;
+  g.fromX=g.x;g.fromY=g.y;g.toX=path[0].x;g.toY=path[0].y;
+  g.lastDir=dir;g.sonarUntil=now+260;
+  juiceReward("snap",495,760,.30,"GO");
+  return true;
+}
 function mazeInit(){
   const w=11,h=9,cells=Array.from({length:h},()=>Array.from({length:w},()=>({v:false,walls:[1,1,1,1]})));
   const stack=[[0,0]];cells[0][0].v=true;
@@ -6775,90 +7391,60 @@ function mazeInit(){
     const [i,nx,ny]=opts[Math.floor(rnd()*opts.length)];
     cells[y][x].walls[i]=0;cells[ny][nx].walls[(i+2)%4]=0;cells[ny][nx].v=true;stack.push([nx,ny]);
   }
-  for(let k=0;k<12;k++){
+  // A few loops prevent the maze from becoming a long forced corridor.
+  for(let k=0;k<10;k++){
     const x=1+Math.floor(rnd()*(w-2)),y=1+Math.floor(rnd()*(h-2));
     const i=Math.floor(rnd()*4),d=dirs[i],nx=x+d[0],ny=y+d[1];
     if(nx>=0&&nx<w&&ny>=0&&ny<h){cells[y][x].walls[i]=0;cells[ny][nx].walls[(i+2)%4]=0}
   }
   const g={
-    w,h,cells,x:0,y:0,dir:1,nextDir:1,turnIntent:0,
-    moveT:0,moveDur:.25,steps:0,found:0,
+    w,h,cells,x:0,y:0,lastDir:1,
+    choices:[],choiceIndex:0,selectedDir:1,
+    dashing:false,dashPath:[],dashIndex:0,dashT:0,dashDur:.085,
+    fromX:0,fromY:0,toX:0,toY:0,steps:0,found:0,
     goalX:w-1,goalY:h-1,goalOpen:false,
     echoes:[
       {x:2,y:6,taken:false,label:"RAIN",color:C.cool},
       {x:7,y:2,taken:false,label:"TRAIN",color:C.accent},
       {x:9,y:7,taken:false,label:"ROOM",color:C.green}
     ],
-    sonar:0,sonarUntil:0,sonarCooldownUntil:0,boostUntil:0,
-    hitFlash:0,lastCellAt:0,trail:[],combo:0,bestCombo:0,
-    invalidMoves:0
+    sonarUntil:0,combo:0,bestCombo:0,invalidMoves:0
   };
-  g.dir=mazeChooseDir(g,0);g.nextDir=g.dir;
+  mazeRefreshChoices(g);
+  // Start by pointing east when available.
+  const east=g.choices.indexOf(1);if(east>=0){g.choiceIndex=east;g.selectedDir=1}
   return g;
 }
 function mazeUpdate(g,dt,now){
-  const dirs=[[0,-1],[1,0],[0,1],[-1,0]];
-  if(arcadeLeftPressed){g.turnIntent=-1;juiceReward("micro",390,760,.20,"LEFT")}
-  if(arcadeRightPressed){g.turnIntent=1;juiceReward("micro",600,760,.20,"RIGHT")}
-
-  if(arcadeActionPressed&&now>=g.sonarCooldownUntil){
-    g.sonar=1;g.sonarUntil=now+900;g.sonarCooldownUntil=now+650;g.boostUntil=now+420;
-    juiceImpact(495,450,.46,{n:10,speed:105,life:.28,size:2.2,shake:1.1,flash:.035,label:"SONAR"});
-    if(audioReady){
-      const targets=g.echoes.filter(e=>!e.taken);
-      const t=targets.length?targets.reduce((a,b)=>Math.hypot(a.x-g.x,a.y-g.y)<Math.hypot(b.x-g.x,b.y-g.y)?a:b):{x:g.goalX,y:g.goalY};
-      const pan=clamp((t.x-g.x)/6,-.72,.72),snap=snapshotChord();
-      ambientGlassSemi(chordTone(4,4,snap),.18,.22,pan,now,.82);
-      warmVoiceSemi(chordTone(0,2,snap),.020,.36,-pan*.25,-.18,now+28);
-    }
-  }
-  g.sonar=Math.max(0,g.sonar-dt*1.45);g.hitFlash=Math.max(0,g.hitFlash-dt*3.4);
-
-  // Before EVERY segment, validate the direction against the current cell.
-  if(g.moveT<=1e-8){
-    const open=mazeOpenDirs(g,g.x,g.y);
-    if(!open.includes(g.dir)){
-      const safe=mazeChooseDir(g,g.turnIntent);
-      if(safe<0){g.invalidMoves++;return}
-      g.dir=safe;g.nextDir=safe;g.turnIntent=0;
-    }
-  }
-
-  const boost=now<g.boostUntil?1.25:1;
-  g.moveT+=dt/g.moveDur*boost;
-  while(g.moveT>=1){
-    g.moveT-=1;
-    const open=mazeOpenDirs(g,g.x,g.y);
-    if(!open.includes(g.dir)){
-      g.invalidMoves++;
-      const safe=mazeChooseDir(g,g.turnIntent);
-      if(safe<0){g.moveT=0;break}
-      g.dir=safe;g.nextDir=safe;g.turnIntent=0;
-    }
-    const nx=g.x+dirs[g.dir][0],ny=g.y+dirs[g.dir][1];
-    if(nx<0||nx>=g.w||ny<0||ny>=g.h){g.invalidMoves++;g.moveT=0;break}
-    g.x=nx;g.y=ny;g.steps++;g.lastCellAt=now;
-
-    for(const e of g.echoes){
-      if(!e.taken&&e.x===g.x&&e.y===g.y){
-        e.taken=true;g.found++;g.combo++;g.bestCombo=Math.max(g.bestCombo,g.combo);
-        juiceReward("power",495,450,.86,`MEMORY / ${e.label}`);addScore(1400+g.found*450,now);
-        song.twPleasureCharge=clamp(song.twPleasureCharge+.14,0,1);
-        if(audioReady){
-          const snap=snapshotChord();deepSubHit(43+g.found*2,.19,now,.34);
-          [0,2,4].forEach((d,i)=>warmVoiceSemi(chordTone(d,1+(i===2?1:0),snap),.052+.009*g.found,.44,(i-1)*.24,-.12,now+i*28));
-          airShimmer(chordTone(4,4,snap),.14,now+82,.36,.10);
-        }
-        if(g.found>=3){g.goalOpen=true;juiceReward("power",495,450,.92,"HOME OPEN")}
+  if(g.dashing){
+    g.dashT+=dt/g.dashDur;
+    while(g.dashT>=1&&g.dashing){
+      g.dashT-=1;
+      g.x=g.toX;g.y=g.toY;g.steps++;
+      if(mazeCollectCell(g,now))return;
+      g.dashIndex++;
+      if(g.dashIndex>=g.dashPath.length){
+        g.dashing=false;g.dashT=0;mazeRefreshChoices(g);
+        g.sonarUntil=now+420;
+        break;
       }
+      g.fromX=g.x;g.fromY=g.y;
+      const n=g.dashPath[g.dashIndex];g.toX=n.x;g.toY=n.y;
     }
-    if(g.goalOpen&&g.x===g.goalX&&g.y===g.goalY){arcadeFinish("LABYRINTH",now,"MEMORY FOUND");return}
+    return;
+  }
 
-    const chosen=mazeChooseDir(g,g.turnIntent);
-    if(chosen<0){g.invalidMoves++;g.moveT=0;break}
-    if(chosen!==g.dir)g.combo++; else g.combo=Math.max(0,g.combo-1);
-    g.bestCombo=Math.max(g.bestCombo,g.combo);
-    g.dir=chosen;g.nextDir=chosen;g.turnIntent=0;
+  mazeRefreshChoices(g);
+  if(arcadeLeftPressed&&g.choices.length){
+    g.choiceIndex=(g.choiceIndex+g.choices.length-1)%g.choices.length;g.selectedDir=g.choices[g.choiceIndex];
+    juiceReward("micro",390,760,.18,"SELECT");
+  }
+  if(arcadeRightPressed&&g.choices.length){
+    g.choiceIndex=(g.choiceIndex+1)%g.choices.length;g.selectedDir=g.choices[g.choiceIndex];
+    juiceReward("micro",600,760,.18,"SELECT");
+  }
+  if(arcadeActionPressed&&g.choices.length){
+    mazeBeginDash(g,g.selectedDir,now);
   }
 }
 
@@ -6941,54 +7527,164 @@ function fishingUpdate(g,dt,now){
   if(g.caught>=5)arcadeFinish("FISHING",now,"TEXTURE CAPTURED");
 }
 
-/* ---------- 10 ORBIT SHOOTER ---------- */
+/* ---------- 10 UFO SHOOTING / 敵をぜんぶ撃て ---------- */
+function shooterMakeEnemies(){
+  const out=[];
+  for(let r=0;r<4;r++)for(let c=0;c<5;c++){
+    out.push({x:325+c*85,y:180+r*58,alive:true});
+  }
+  return out;
+}
 function shooterInit(){
-  const enemies=[];
-  for(let r=0;r<4;r++)for(let c=0;c<5;c++)enemies.push({x:335+c*80,y:205+r*58,alive:true});
-  return {x:495,bullets:[],enemies,dir:1,speed:42,kills:0,fireCd:0};
+  const cp=getArcadeCheckpoint("SHOOTER");
+  const g={
+    x:495,vx:0,bullets:[],enemyBullets:[],enemies:shooterMakeEnemies(),
+    dir:1,fireCd:0,enemyFire:.72,lives:3,kills:Math.max(0,cp?.kills|0),
+    combo:0,bestCombo:Math.max(0,cp?.bestCombo|0),invulnUntil:0
+  };
+  // Resume by removing the first N enemies. Exact identity is unimportant here;
+  // progress is intentionally simple and visible.
+  for(let i=0;i<Math.min(g.kills,g.enemies.length);i++)g.enemies[i].alive=false;
+  return g;
 }
 function shooterUpdate(g,dt,now){
   const dir=(rightDown?1:0)-(leftDown?1:0);
-  g.x=clamp(g.x+dir*420*dt,230,760);g.fireCd=Math.max(0,g.fireCd-dt);
+  g.vx=lerp(g.vx,dir*500,clamp(dt*12,0,1));
+  g.x=clamp(g.x+g.vx*dt,245,745);
+  g.fireCd=Math.max(0,g.fireCd-dt);
+
   if(arcadeActionPressed&&g.fireCd<=0){
-    g.bullets.push({x:g.x,y:720,vy:-610});g.fireCd=.16;
-    juiceReward("micro",g.x,720,.26,"");
+    g.bullets.push({x:g.x,y:720,vy:-700});
+    g.fireCd=.13;
+    juiceReward("micro",g.x,720,.22,"");
   }
+
   let minX=999,maxX=-999;
-  for(const e of g.enemies)if(e.alive){e.x+=g.dir*g.speed*dt;minX=Math.min(minX,e.x);maxX=Math.max(maxX,e.x)}
-  if(minX<255||maxX>735){g.dir*=-1;for(const e of g.enemies)if(e.alive)e.y+=12}
-  for(const b of g.bullets)b.y+=b.vy*dt;
-  for(const b of g.bullets)for(const e of g.enemies)if(e.alive&&Math.abs(b.x-e.x)<24&&Math.abs(b.y-e.y)<22){
-    e.alive=false;b.y=-99;g.kills++;
-    juiceReward(g.kills%5===0?"item":"snap",e.x,e.y,clamp(.42+g.kills*.018,0,.78),g.kills%5===0?`WAVE ${g.kills/5}`:"");
+  for(const e of g.enemies)if(e.alive){
+    e.x+=g.dir*(52+g.kills*1.8)*dt;
+    minX=Math.min(minX,e.x);maxX=Math.max(maxX,e.x);
   }
-  g.bullets=g.bullets.filter(b=>b.y>-20);
-  if(g.kills>=20)arcadeFinish("SHOOTER",now,"LEAD PHRASE");
+  if(minX<270||maxX>720){
+    g.dir*=-1;
+    for(const e of g.enemies)if(e.alive)e.y+=14;
+  }
+
+  g.enemyFire-=dt;
+  if(g.enemyFire<=0){
+    const live=g.enemies.filter(e=>e.alive);
+    if(live.length){
+      const e=live[(Math.floor(now/240)+g.kills)%live.length];
+      g.enemyBullets.push({x:e.x,y:e.y+16,vy:260});
+    }
+    g.enemyFire=Math.max(.34,.78-g.kills*.018);
+  }
+
+  for(const b of g.bullets)b.y+=b.vy*dt;
+  for(const b of g.enemyBullets)b.y+=b.vy*dt;
+
+  for(const b of g.bullets)for(const e of g.enemies)if(e.alive&&Math.abs(b.x-e.x)<27&&Math.abs(b.y-e.y)<23){
+    e.alive=false;b.y=-50;g.kills++;g.combo++;g.bestCombo=Math.max(g.bestCombo,g.combo);
+    addScore(180+g.combo*18,now);
+    juiceReward(g.combo%5===0?"power":"snap",e.x,e.y,.55,g.combo%5===0?`COMBO ×${g.combo}`:"HIT");
+    setArcadeCheckpoint("SHOOTER",{kills:g.kills,bestCombo:g.bestCombo},"ENEMY SAVE");
+    if(g.kills>=20){arcadeFinish("SHOOTER",now,"20 / 20");return}
+  }
+
+  if(now>=g.invulnUntil){
+    for(const b of g.enemyBullets){
+      if(Math.abs(b.x-g.x)<28&&Math.abs(b.y-735)<22){
+        b.y=999;g.lives--;g.combo=0;g.invulnUntil=now+1100;
+        juiceImpact(g.x,735,.72,{label:`ライフ ${g.lives}`,n:16,shake:5,flash:.08});
+        if(g.lives<=0){
+          g.lives=3;
+          setArcadeCheckpoint("SHOOTER",{kills:g.kills,bestCombo:g.bestCombo},"SHOOTER FAIL");
+          leaveBonus(now,false);
+          return;
+        }
+      }
+    }
+  }
+
+  g.bullets=g.bullets.filter(b=>b.y>-30);
+  g.enemyBullets=g.enemyBullets.filter(b=>b.y<850);
 }
 
-/* ---------- 11 ECHO CLIMBER ---------- */
+/* ---------- 11 ECHO CLIMBER / STORY ASCENT ---------- */
 function climberInit(){
+  const cp=getArcadeCheckpoint("CLIMBER");
+  const savedHeight=clamp(+cp?.height||0,0,1799);
+  const checkpoint=clamp(+cp?.checkpoint||Math.floor(savedHeight/600)*600,0,1200);
   const plats=[];
-  for(let i=0;i<18;i++)plats.push({x:280+((i*137)%410),y:790-i*105,w:100});
-  return {x:495,y:700,vx:0,vy:-460,cam:0,height:0,plats};
+  for(let i=0;i<26;i++){
+    plats.push({
+      x:275+((i*149+Math.floor(checkpoint/6))%430),
+      y:790-i*92,
+      w:i%6===0?128:92,
+      move:i%5===0,
+      phase:i*.71
+    });
+  }
+  const g={
+    x:495,y:700,vx:0,vy:-500,cam:savedHeight,height:savedHeight,plats,
+    checkpoint,landings:0,combo:Math.max(0,cp?.combo|0),
+    bestCombo:Math.max(0,cp?.bestCombo|0),fallCount:Math.max(0,cp?.fallCount|0)
+  };
+  if(savedHeight>0)eventFlash(`ECHO CLIMBER / RESUME ${Math.floor(savedHeight)}m`,nowMs(),950,.72);
+  return g;
 }
 function climberUpdate(g,dt,now){
   const dir=(rightDown?1:0)-(leftDown?1:0);
-  g.vx=lerp(g.vx,dir*330,clamp(dt*8,0,1));g.x=clamp(g.x+g.vx*dt,225,765);
-  const prevY=g.y;g.vy+=920*dt;g.y+=g.vy*dt;
+  g.vx=lerp(g.vx,dir*370,clamp(dt*9,0,1));
+  g.x+=g.vx*dt;
+  if(g.x<205)g.x=785;
+  if(g.x>785)g.x=205;
+
+  const prevY=g.y;
+  g.vy+=970*dt;g.y+=g.vy*dt;
+
   for(const p of g.plats){
+    if(p.move){p.phase+=dt*1.35;p.x+=Math.sin(p.phase)*38*dt}
     const sy=p.y+g.cam;
-    if(g.vy>0&&prevY+20<=sy&&g.y+20>=sy&&Math.abs(g.x-p.x)<p.w*.55){
-      g.y=sy-21;g.vy=-475;
-      juiceReward("snap",g.x,g.y,.48,"ECHO");
+    if(g.vy>0&&prevY+20<=sy&&g.y+20>=sy&&Math.abs(g.x-p.x)<p.w*.58){
+      g.y=sy-21;g.vy=-500-Math.min(90,g.combo*4);
+      g.landings++;g.combo++;g.bestCombo=Math.max(g.bestCombo,g.combo);
+      const strong=g.combo%5===0;
+      juiceReward(strong?"item":"snap",g.x,g.y,strong?.7:.46,strong?`ECHO ×${g.combo}`:"ECHO");
+      if(audioReady&&strong){
+        const snap=snapshotChord();
+        warmVoiceSemi(chordTone((g.combo/5)%5,4,snap),.03,.26,(g.x-495)/380,-.1,now);
+      }
     }
   }
-  if(g.y<360){
-    const d=360-g.y;g.y=360;g.cam+=d;g.height+=d;
-    for(const p of g.plats)p.y+=0;
+
+  if(g.y<345){
+    const d=345-g.y;
+    g.y=345;g.cam+=d;g.height+=d;
+    if(Math.floor(g.height/100)>Math.floor((g.height-d)/100)){
+      setArcadeCheckpoint("CLIMBER",{
+        height:g.height,checkpoint:g.checkpoint,combo:g.combo,bestCombo:g.bestCombo,fallCount:g.fallCount
+      },"HEIGHT SAVE");
+    }
+    const nextCP=Math.floor(g.height/600)*600;
+    if(nextCP>g.checkpoint&&nextCP<1800){
+      g.checkpoint=nextCP;
+      setArcadeCheckpoint("CLIMBER",{
+        height:g.height,checkpoint:g.checkpoint,combo:g.combo,bestCombo:g.bestCombo,fallCount:g.fallCount
+      },"HEIGHT CHECKPOINT");
+      juiceReward("power",495,170,.9,`CHECKPOINT ${g.checkpoint}m`);
+    }
   }
-  if(g.y>880){g.x=495;g.y=700;g.vy=-460;g.cam=0;g.height=0;juiceImpact(495,760,.55,{label:"FALL",n:9,shake:3})}
-  if(g.height>=1800)arcadeFinish("CLIMBER",now,"HALL OPEN");
+
+  if(g.y>885){
+    g.fallCount++;g.combo=0;
+    juiceImpact(g.x,790,.68,{label:"FALL / CHECKPOINT",n:16,shake:5,flash:.07});
+    g.height=g.checkpoint;g.cam=g.checkpoint;
+    g.x=495;g.y=700;g.vx=0;g.vy=-510;
+    // Regenerate a readable route for the checkpoint.
+    g.plats.forEach((p,i)=>{p.x=275+((i*149+Math.floor(g.checkpoint/6))%430);p.y=790-i*92});
+  }
+
+  if(g.height>=1800)arcadeFinish("CLIMBER",now,g.fallCount===0?"1800m / NO FALL":"1800m CLEAR");
 }
 
 /* ---------- 12 WAVE SURFER ---------- */
@@ -7071,32 +7767,788 @@ function memoryUpdate(g,dt,now){
   }
 }
 
-/* ---------- 15 DREAM TERMINAL ---------- */
-const DREAM_WORLDS=["WARM","LONELY","ECSTATIC","FLOATING","DARK","HOME"];
-function dreamInit(){return {select:0,round:0,choices:[],pulse:0}}
-function dreamUpdate(g,dt,now){
-  g.pulse+=dt;
-  if(arcadeLeftPressed)g.select=(g.select+5)%6;
-  if(arcadeRightPressed)g.select=(g.select+1)%6;
-  if(arcadeActionPressed){
-    const w=DREAM_WORLDS[g.select];g.choices.push(g.select);g.round++;
-    juiceReward("power",495,450,.78,w);
-    // Every decision audibly reshapes the world now, not only at the end.
-    song.guidedWorld=g.select%3;
-    song.twBackdrop=g.select%TW_BACKDROPS.length;
-    song.worldCommitBars=Math.max(song.worldCommitBars,4);
-    if(audioReady){
-      const snap=snapshotChord();
-      [0,2,4].forEach((d,i)=>warmVoiceSemi(chordTone(d,2+(g.select===5?1:0),snap),.038,.42,(i-1)*.18,-.08,now+i*24));
-    }
-    if(g.round>=3){
-      const avg=Math.round(g.choices.reduce((a,b)=>a+b,0)/g.choices.length);
-      song.guidedWorld=avg%3;
-      song.twBackdrop=avg%TW_BACKDROPS.length;
-      song.worldCommitBars=16;
-      arcadeFinish("DREAM",now,"WORLD COMMITTED");
+/* ---------- 16 TEMPEST RING / VECTOR PRESSURE ---------- */
+function angleDelta(a,b){
+  let d=(a-b)%(Math.PI*2);
+  if(d>Math.PI)d-=Math.PI*2;
+  if(d<-Math.PI)d+=Math.PI*2;
+  return d;
+}
+function tempestWaveEnemies(wave){
+  const n=10+wave*3,out=[];
+  for(let i=0;i<n;i++){
+    out.push({
+      lane:(i*5+wave*3)%16,
+      r:35-(i%4)*14,
+      speed:52+wave*13+(i%3)*8,
+      alive:true,
+      type:(i+wave)%4===0?1:0,
+      phase:i*.47
+    });
+  }
+  return out;
+}
+function tempestInit(){
+  const cp=getArcadeCheckpoint("TEMPEST");
+  const wave=clamp(cp?.wave|0,0,2);
+  const g={
+    theta:-Math.PI/2,omega:0,bullets:[],enemies:tempestWaveEnemies(wave),
+    wave,lives:clamp(cp?.lives|0,1,3)||3,combo:Math.max(0,cp?.combo|0),
+    bestCombo:Math.max(0,cp?.bestCombo|0),fireCd:0,flash:0
+  };
+  if(Array.isArray(cp?.enemies)&&cp.enemies.length===g.enemies.length){
+    g.enemies.forEach((e,i)=>{
+      const q=cp.enemies[i];
+      e.alive=q?.alive!==false;
+      e.r=clamp(+q?.r||e.r,20,285);
+    });
+  }
+  return g;
+}
+function tempestSave(g,reason="VECTOR SAVE"){
+  setArcadeCheckpoint("TEMPEST",{
+    wave:g.wave,lives:g.lives,combo:g.combo,bestCombo:g.bestCombo,
+    enemies:g.enemies.map(e=>({lane:e.lane,r:e.r,alive:e.alive,type:e.type}))
+  },reason);
+}
+function tempestUpdate(g,dt,now){
+  const dir=(rightDown?1:0)-(leftDown?1:0);
+  g.omega=lerp(g.omega,dir*3.1,clamp(dt*12,0,1));
+  g.theta+=g.omega*dt;
+  g.fireCd=Math.max(0,g.fireCd-dt);
+  if(arcadeActionPressed&&g.fireCd<=0){
+    g.bullets.push({theta:g.theta,r:286,vr:-610});
+    g.fireCd=.12;
+    juiceReward("snap",495+Math.cos(g.theta)*285,450+Math.sin(g.theta)*285,.28,"");
+  }
+  for(const b of g.bullets)b.r+=b.vr*dt;
+  for(const e of g.enemies)if(e.alive){
+    e.phase+=dt*(1.5+g.wave*.2);
+    e.r+=e.speed*dt*(e.type?1.12:1);
+  }
+
+  for(const b of g.bullets)for(const e of g.enemies)if(e.alive){
+    const ea=e.lane/16*Math.PI*2-Math.PI/2;
+    if(Math.abs(angleDelta(b.theta,ea))<.115&&Math.abs(b.r-e.r)<24){
+      e.alive=false;b.r=-30;g.combo++;g.bestCombo=Math.max(g.bestCombo,g.combo);
+      addScore(190+g.combo*28,now);
+      juiceReward(g.combo%5===0?"power":"break",
+        495+Math.cos(ea)*e.r,450+Math.sin(ea)*e.r,
+        clamp(.42+g.combo*.025,.42,.9),g.combo%5===0?`VECTOR ×${g.combo}`:"");
+      if(audioReady){
+        const snap=snapshotChord();
+        chipPulse(chordTone((e.lane+g.combo)%5,4,snap),.30,now,.055,Math.sin(ea)*.55,.88);
+      }
+      tempestSave(g,"VECTOR HIT");
     }
   }
+  g.bullets=g.bullets.filter(b=>b.r>10);
+
+  for(const e of g.enemies)if(e.alive&&e.r>=286){
+    const ea=e.lane/16*Math.PI*2-Math.PI/2;
+    e.alive=false;
+    if(Math.abs(angleDelta(g.theta,ea))<.34){
+      g.lives--;g.combo=0;
+      juiceImpact(495+Math.cos(ea)*286,450+Math.sin(ea)*286,.82,{label:`RIM HIT / ${g.lives}`,n:18,shake:6,flash:.1});
+      if(g.lives<=0){
+        g.lives=3;
+        tempestSave(g,"TEMPEST FAIL");
+        leaveBonus(now,false);
+        return;
+      }
+    }else{
+      juiceReward("micro",495+Math.cos(ea)*286,450+Math.sin(ea)*286,.22,"DODGE");
+    }
+  }
+
+  if(!g.enemies.some(e=>e.alive)){
+    if(g.wave>=2){
+      arcadeFinish("TEMPEST",now,g.bestCombo>=12?"3 TUBES / VECTOR MASTER":"3 TUBES CLEAR");
+      return;
+    }
+    g.wave++;g.combo=0;g.enemies=tempestWaveEnemies(g.wave);
+    tempestSave(g,"TUBE SAVE");
+    juiceReward("power",495,450,.95,`TUBE ${g.wave} CLEAR`);
+  }
+}
+
+/* ---------- 17 LUNAR LANDER / PRECISION PHYSICS ---------- */
+const LANDER_PADS=[
+  {x:305,w:110,m:1},
+  {x:495,w:78,m:2},
+  {x:685,w:56,m:3}
+];
+function landerResetShip(g,now){
+  g.x=310+((g.landings*173+71)%370);
+  g.y=145;g.vx=(g.landings%2?1:-1)*(30+g.landings*8);g.vy=5;
+  g.angle=(g.landings%2?-.10:.10);g.fuel=100;g.settle=0;g.invulnUntil=now+500;
+}
+function landerInit(){
+  const cp=getArcadeCheckpoint("LANDER");
+  const g={x:495,y:150,vx:0,vy:0,angle:0,fuel:100,landings:clamp(cp?.landings|0,0,2),
+           best:+cp?.best||0,crashes:0,settle:0,invulnUntil:0};
+  landerResetShip(g,nowMs());
+  return g;
+}
+function landerUpdate(g,dt,now){
+  const dir=(rightDown?1:0)-(leftDown?1:0);
+  g.angle=clamp(g.angle+dir*2.15*dt,-1.15,1.15);
+  const thrust=arcadeActionDown&&g.fuel>0;
+  if(thrust){
+    const power=205;
+    g.vx+=Math.sin(g.angle)*power*dt;
+    g.vy-=Math.cos(g.angle)*power*dt;
+    g.fuel=Math.max(0,g.fuel-24*dt);
+    if(Math.floor(now/90)!==Math.floor((now-dt*1000)/90)){
+      juiceReward("micro",g.x,g.y+18,.15,"");
+    }
+  }
+  g.vy+=108*dt;
+  g.x+=g.vx*dt;g.y+=g.vy*dt;
+  if(g.x<220){g.x=220;g.vx=Math.abs(g.vx)*.65}
+  if(g.x>770){g.x=770;g.vx=-Math.abs(g.vx)*.65}
+  if(g.y<115){g.y=115;g.vy=Math.max(0,g.vy)}
+
+  const groundY=735;
+  if(g.y>=groundY-20&&now>=g.invulnUntil){
+    let pad=null;
+    for(const p of LANDER_PADS)if(Math.abs(g.x-p.x)<=p.w*.5){pad=p;break}
+    const speed=Math.hypot(g.vx,g.vy);
+    const safe=pad&&Math.abs(g.angle)<.20&&Math.abs(g.vy)<78&&Math.abs(g.vx)<58;
+    if(safe){
+      const quality=clamp(1-speed/105-Math.abs(g.angle)*.55,0,1);
+      const pts=Math.round((650+quality*1200)*pad.m);
+      g.landings++;g.best=Math.max(g.best,quality);
+      addScore(pts,now);
+      juiceReward("power",g.x,groundY,.95,`SOFT LAND ×${pad.m}`);
+      if(audioReady){
+        const snap=snapshotChord();deepSubHit(40+pad.m*2,.18+.04*quality,now,.32);
+        [0,2,4].forEach((d,i)=>warmVoiceSemi(chordTone(d,1+(pad.m===3?1:0),snap),.04,.34,(i-1)*.18,-.06,now+i*28));
+      }
+      if(g.landings>=3){arcadeFinish("LANDER",now,g.best>.72?"3 LANDINGS / SILK TOUCH":"3 LANDINGS CLEAR");return}
+      setArcadeCheckpoint("LANDER",{landings:g.landings,best:g.best},"LANDING SAVE");
+      landerResetShip(g,now);
+    }else{
+      g.crashes++;
+      juiceImpact(g.x,groundY,.9,{label:"CRASH",n:24,shake:8,flash:.13});
+      setArcadeCheckpoint("LANDER",{landings:g.landings,best:g.best},"LANDER CRASH SAVE");
+      if(g.crashes>=3){g.crashes=0;leaveBonus(now,false);return}
+      landerResetShip(g,now);
+    }
+  }
+}
+
+/* ---------- 18 FEEDBACK JOUST / HEIGHT COMBAT ---------- */
+function joustEnemy(i,wave){
+  return {x:300+(i*127+wave*61)%390,y:260+(i%3)*150,vx:(i%2?1:-1)*(95+wave*16),
+          vy:-50-(i%3)*18,alive:true,flap:.25+i*.11,phase:i*.8};
+}
+function joustSpawnWave(g){
+  const n=3+g.wave;
+  g.enemies=Array.from({length:n},(_,i)=>joustEnemy(i,g.wave));
+}
+function joustInit(){
+  const cp=getArcadeCheckpoint("JOUST");
+  const g={x:495,y:520,vx:0,vy:0,wave:clamp(cp?.wave|0,0,2),kills:Math.max(0,cp?.kills|0),
+           lives:clamp(cp?.lives|0,1,3)||3,combo:0,bestCombo:Math.max(0,cp?.bestCombo|0),
+           enemies:[],flapCd:0,invulnUntil:0};
+  joustSpawnWave(g);
+  return g;
+}
+function joustUpdate(g,dt,now){
+  const dir=(rightDown?1:0)-(leftDown?1:0);
+  g.vx=lerp(g.vx,dir*280,clamp(dt*4.2,0,1));
+  if(arcadeActionPressed){
+    g.vy-=255;
+    g.vy=Math.max(g.vy,-390);
+    juiceReward("snap",g.x,g.y,.27,"FLAP");
+    if(audioReady){
+      const snap=snapshotChord();
+      warmVoiceSemi(chordTone((g.kills+2)%5,4,snap),.018,.13,(g.x-495)/360,-.18,now);
+    }
+  }
+  g.vy+=350*dt;g.x+=g.vx*dt;g.y+=g.vy*dt;
+  if(g.x<205)g.x=785;if(g.x>785)g.x=205;
+  if(g.y<150){g.y=150;g.vy=Math.abs(g.vy)*.35}
+  if(g.y>770){g.y=770;g.vy=-210}
+
+  for(const e of g.enemies)if(e.alive){
+    e.phase+=dt*2.2;e.flap-=dt;
+    const seek=Math.sign(g.x-e.x);
+    e.vx=lerp(e.vx,seek*(105+g.wave*22),clamp(dt*1.4,0,1));
+    if(e.flap<=0){
+      e.vy-=190+g.wave*18;
+      e.flap=.55+((Math.sin(e.phase)+1)*.5)*.6;
+    }
+    e.vy+=335*dt;e.x+=e.vx*dt;e.y+=e.vy*dt;
+    if(e.x<205)e.x=785;if(e.x>785)e.x=205;
+    if(e.y<170){e.y=170;e.vy=Math.abs(e.vy)*.4}
+    if(e.y>760){e.y=760;e.vy=-170}
+
+    if(Math.abs(g.x-e.x)<34&&Math.abs(g.y-e.y)<35&&now>=g.invulnUntil){
+      if(g.y<e.y-8){
+        e.alive=false;g.kills++;g.combo++;g.bestCombo=Math.max(g.bestCombo,g.combo);
+        addScore(300+g.combo*55,now);
+        juiceReward(g.combo%4===0?"power":"item",e.x,e.y,.72,g.combo%4===0?`JOUST ×${g.combo}`:"TOP HIT");
+      }else{
+        g.lives--;g.combo=0;g.invulnUntil=now+1200;g.vy=-250;
+        juiceImpact(g.x,g.y,.78,{label:`LOW HIT / LIFE ${g.lives}`,n:18,shake:6,flash:.1});
+        if(g.lives<=0){
+          g.lives=3;
+          setArcadeCheckpoint("JOUST",{wave:g.wave,kills:g.kills,lives:g.lives,bestCombo:g.bestCombo},"JOUST FAIL");
+          leaveBonus(now,false);return;
+        }
+      }
+    }
+  }
+
+  if(!g.enemies.some(e=>e.alive)){
+    if(g.wave>=2){arcadeFinish("JOUST",now,g.bestCombo>=6?"3 WAVES / SKY KING":"3 WAVES CLEAR");return}
+    g.wave++;joustSpawnWave(g);
+    setArcadeCheckpoint("JOUST",{wave:g.wave,kills:g.kills,lives:g.lives,bestCombo:g.bestCombo},"JOUST WAVE SAVE");
+    juiceReward("power",495,420,.9,`WAVE ${g.wave} CLEAR`);
+  }
+}
+
+/* ---------- 19 PUZZLE ORBIT / AIM + MATCH + CASCADE ---------- */
+const BUBBLE_COLORS=[0,1,2,3];
+function bubbleEmptyGrid(){return Array.from({length:10},()=>Array(8).fill(-1))}
+function bubbleMakeInitial(){
+  const g=bubbleEmptyGrid();
+  for(let r=0;r<5;r++)for(let c=0;c<8;c++)g[r][c]=(r*2+c+(r%2)*2)%4;
+  // carve several holes so the first shots create readable tactical choices
+  [[4,1],[4,5],[3,3],[3,7],[2,0],[2,6]].forEach(([r,c])=>g[r][c]=-1);
+  return g;
+}
+function bubbleCellXY(r,c){return {x:300+c*56,y:175+r*50}}
+function bubbleNeighbors(r,c){
+  return [[r-1,c],[r+1,c],[r,c-1],[r,c+1]].filter(([rr,cc])=>rr>=0&&rr<10&&cc>=0&&cc<8);
+}
+function bubbleInit(){
+  const cp=getArcadeCheckpoint("BUBBLE");
+  const grid=Array.isArray(cp?.grid)&&cp.grid.length===10
+    ? cp.grid.map(row=>Array.from({length:8},(_,i)=>Number.isInteger(row?.[i])?row[i]:-1))
+    : bubbleMakeInitial();
+  return {grid,angle:0,shot:null,popped:Math.max(0,cp?.popped|0),shots:Math.max(0,cp?.shots|0),
+          misses:Math.max(0,cp?.misses|0),nextColor:clamp(cp?.nextColor|0,0,3),
+          chain:0,bestChain:Math.max(0,cp?.bestChain|0),pressure:0};
+}
+function bubbleConnected(g,sr,sc,color){
+  const out=[],seen=new Set(),q=[[sr,sc]];
+  while(q.length){
+    const [r,c]=q.shift(),key=r+","+c;if(seen.has(key))continue;seen.add(key);
+    if(g.grid[r]?.[c]!==color)continue;
+    out.push([r,c]);
+    for(const n of bubbleNeighbors(r,c))q.push(n);
+  }
+  return out;
+}
+function bubbleDropDisconnected(g){
+  const seen=new Set(),q=[];
+  for(let c=0;c<8;c++)if(g.grid[0][c]>=0)q.push([0,c]);
+  while(q.length){
+    const [r,c]=q.shift(),key=r+","+c;if(seen.has(key))continue;seen.add(key);
+    if(g.grid[r]?.[c]<0)continue;
+    for(const [rr,cc] of bubbleNeighbors(r,c))if(g.grid[rr][cc]>=0)q.push([rr,cc]);
+  }
+  let dropped=0;
+  for(let r=0;r<10;r++)for(let c=0;c<8;c++)if(g.grid[r][c]>=0&&!seen.has(r+","+c)){g.grid[r][c]=-1;dropped++}
+  return dropped;
+}
+function bubbleAddPressure(g,now){
+  for(let r=9;r>0;r--)g.grid[r]=g.grid[r-1].slice();
+  g.grid[0]=Array.from({length:8},(_,c)=>(g.shots+c*3)%4);
+  juiceImpact(495,175,.55,{label:"CEILING DOWN",n:12,shake:3,flash:.05});
+  if(g.grid[9].some(v=>v>=0)){snapshotCurrentStageProgress("BUBBLE PRESSURE");leaveBonus(now,false)}
+}
+function bubbleAttach(g,now,x,y){
+  let best=null,bd=1e9;
+  for(let r=0;r<10;r++)for(let c=0;c<8;c++)if(g.grid[r][c]<0){
+    const p=bubbleCellXY(r,c),d=(p.x-x)**2+(p.y-y)**2;
+    if(d<bd){bd=d;best=[r,c]}
+  }
+  if(!best){leaveBonus(now,false);return}
+  const [r,c]=best;const color=g.shot.color;g.grid[r][c]=color;g.shot=null;g.shots++;
+  const group=bubbleConnected(g,r,c,color);
+  if(group.length>=3){
+    group.forEach(([rr,cc])=>g.grid[rr][cc]=-1);
+    const dropped=bubbleDropDisconnected(g);
+    const total=group.length+dropped;g.popped+=total;g.chain++;g.bestChain=Math.max(g.bestChain,g.chain);g.misses=0;
+    addScore(total*180+g.chain*240,now);
+    juiceReward(total>=7?"power":"item",bubbleCellXY(r,c).x,bubbleCellXY(r,c).y,
+      clamp(.48+total*.04,.48,1),total>=7?`CASCADE ${total}`:`POP ${total}`);
+    if(audioReady){
+      const snap=snapshotChord();
+      [0,2,4].slice(0,Math.min(3,group.length)).forEach((d,i)=>
+        warmVoiceSemi(chordTone((color+d)%5,3+(total>=7?1:0),snap),.032,.24,(i-1)*.2,-.05,now+i*24));
+    }
+  }else{
+    g.chain=0;g.misses++;
+    if(g.misses>0&&g.misses%4===0){bubbleAddPressure(g,now);if(bonusGame.returnAt)return}
+  }
+  g.nextColor=(g.shots*3+g.popped+1)%4;
+  setArcadeCheckpoint("BUBBLE",{
+    grid:g.grid.map(row=>row.slice()),popped:g.popped,shots:g.shots,misses:g.misses,
+    nextColor:g.nextColor,bestChain:g.bestChain
+  },"BUBBLE SHOT SAVE");
+  if(g.popped>=30||!g.grid.some(row=>row.some(v=>v>=0)))arcadeFinish("BUBBLE",now,g.bestChain>=4?"30 POP / CASCADE MASTER":"30 POP CLEAR");
+}
+function bubbleUpdate(g,dt,now){
+  const dir=(rightDown?1:0)-(leftDown?1:0);
+  g.angle=clamp(g.angle+dir*1.65*dt,-1.18,1.18);
+  if(arcadeActionPressed&&!g.shot){
+    g.shot={x:495,y:770,vx:Math.sin(g.angle)*500,vy:-Math.cos(g.angle)*500,color:g.nextColor};
+    juiceReward("snap",495,770,.28,"SHOOT");
+  }
+  if(g.shot){
+    const b=g.shot;b.x+=b.vx*dt;b.y+=b.vy*dt;
+    if(b.x<270){b.x=270;b.vx=Math.abs(b.vx)}
+    if(b.x>720){b.x=720;b.vx=-Math.abs(b.vx)}
+    let hit=b.y<148;
+    if(!hit){
+      for(let r=0;r<10&&!hit;r++)for(let c=0;c<8;c++)if(g.grid[r][c]>=0){
+        const p=bubbleCellXY(r,c);
+        if(Math.hypot(b.x-p.x,b.y-p.y)<45){hit=true;break}
+      }
+    }
+    if(hit)bubbleAttach(g,now,b.x,b.y);
+  }
+}
+
+
+/* ---------- V20-01 COLOR DROP / 同じ色を4つ ---------- */
+const DROP_COLORS=[0,1,2,3];
+function dropEmptyBoard(){return Array.from({length:12},()=>Array(6).fill(-1))}
+function dropNewPiece(g){
+  g.piece={x:2,y:0,rot:0,a:(g.serial*3+1)%4,b:(g.serial*5+2)%4};
+  g.serial++;
+}
+function dropCells(p,x=p.x,y=p.y,rot=p.rot){
+  const dirs=[[0,-1],[1,0],[0,1],[-1,0]],d=dirs[rot&3];
+  return [{x,y,c:p.a},{x:x+d[0],y:y+d[1],c:p.b}];
+}
+function dropValid(g,x,y,rot){
+  for(const q of dropCells(g.piece,x,y,rot)){
+    if(q.x<0||q.x>=6||q.y>=12)return false;
+    if(q.y>=0&&g.board[q.y][q.x]>=0)return false;
+  }
+  return true;
+}
+function dropGroups(g){
+  const groups=[],seen=new Set();
+  for(let r=0;r<12;r++)for(let c=0;c<6;c++){
+    const color=g.board[r][c],key=r+","+c;
+    if(color<0||seen.has(key))continue;
+    const q=[[r,c]],group=[];
+    while(q.length){
+      const [rr,cc]=q.shift(),k=rr+","+cc;
+      if(seen.has(k)||rr<0||rr>=12||cc<0||cc>=6||g.board[rr][cc]!==color)continue;
+      seen.add(k);group.push([rr,cc]);
+      q.push([rr-1,cc],[rr+1,cc],[rr,cc-1],[rr,cc+1]);
+    }
+    if(group.length>=4)groups.push(group);
+  }
+  return groups;
+}
+function dropGravity(g){
+  for(let c=0;c<6;c++){
+    const vals=[];
+    for(let r=11;r>=0;r--)if(g.board[r][c]>=0)vals.push(g.board[r][c]);
+    for(let r=11;r>=0;r--)g.board[r][c]=vals[11-r]??-1;
+  }
+}
+function dropResolve(g,now){
+  let chain=0,total=0,guard=0;
+  while(guard++<8){
+    const groups=dropGroups(g);if(!groups.length)break;
+    chain++;
+    for(const group of groups)for(const [r,c] of group){g.board[r][c]=-1;total++}
+    dropGravity(g);
+  }
+  if(total){
+    g.cleared+=total;g.chain=chain;g.bestChain=Math.max(g.bestChain,chain);
+    addScore(total*120+chain*500,now);
+    juiceReward(chain>=2?"power":"item",495,420,.68,chain>=2?`${chain}れんさ！`:`${total}こ消えた！`);
+    setArcadeCheckpoint("DROP",{cleared:g.cleared,bestChain:g.bestChain},"COLOR SAVE");
+    if(g.cleared>=20){arcadeFinish("DROP",now,"20こ消した！");return true}
+  }else g.chain=0;
+  return false;
+}
+function dropLock(g,now){
+  for(const q of dropCells(g.piece)){
+    if(q.y<0){
+      // Lose only the current board; keep collected progress.
+      g.board=dropEmptyBoard();dropNewPiece(g);
+      setArcadeCheckpoint("DROP",{cleared:g.cleared,bestChain:g.bestChain},"STACK RESET");
+      juiceImpact(495,180,.7,{label:"つみすぎ！",n:16,shake:5,flash:.08});
+      return;
+    }
+    g.board[q.y][q.x]=q.c;
+  }
+  if(dropResolve(g,now))return;
+  dropNewPiece(g);
+}
+function dropInit(){
+  const cp=getArcadeCheckpoint("DROP");
+  const g={board:dropEmptyBoard(),piece:null,fall:0,serial:1,cleared:Math.max(0,cp?.cleared|0),
+           chain:0,bestChain:Math.max(0,cp?.bestChain|0)};
+  dropNewPiece(g);return g;
+}
+function dropUpdate(g,dt,now){
+  if(arcadeLeftPressed&&dropValid(g,g.piece.x-1,g.piece.y,g.piece.rot))g.piece.x--;
+  if(arcadeRightPressed&&dropValid(g,g.piece.x+1,g.piece.y,g.piece.rot))g.piece.x++;
+  if(arcadeActionPressed){
+    const nr=(g.piece.rot+1)&3;
+    if(dropValid(g,g.piece.x,g.piece.y,nr))g.piece.rot=nr;
+  }
+  g.fall+=dt*(1.7+Math.min(1.2,g.cleared*.035));
+  while(g.fall>=1){
+    g.fall-=1;
+    if(dropValid(g,g.piece.x,g.piece.y+1,g.piece.rot))g.piece.y++;
+    else{dropLock(g,now);break}
+  }
+}
+
+/* ---------- V20-02 もぐらたたき ---------- */
+function moleInit(){
+  const cp=getArcadeCheckpoint("MOLE");
+  return {cursor:2,holes:Array(5).fill(0),hits:Math.max(0,cp?.hits|0),combo:0,
+          bestCombo:Math.max(0,cp?.bestCombo|0),spawn:0.25,life:0};
+}
+function moleUpdate(g,dt,now){
+  if(arcadeLeftPressed)g.cursor=(g.cursor+4)%5;
+  if(arcadeRightPressed)g.cursor=(g.cursor+1)%5;
+  for(let i=0;i<5;i++)if(g.holes[i]>0)g.holes[i]-=dt;
+  g.spawn-=dt;
+  if(g.spawn<=0){
+    const empty=[];for(let i=0;i<5;i++)if(g.holes[i]<=0)empty.push(i);
+    if(empty.length){
+      const n=g.hits>=8?Math.min(2,empty.length):1;
+      for(let j=0;j<n;j++){
+        const ix=empty[(g.hits*3+j*2+Math.floor(now/700))%empty.length];
+        g.holes[ix]=Math.max(.42,1.15-g.hits*.035);
+      }
+    }
+    g.spawn=Math.max(.28,.82-g.hits*.025);
+  }
+  if(arcadeActionPressed){
+    if(g.holes[g.cursor]>0){
+      g.holes[g.cursor]=0;g.hits++;g.combo++;g.bestCombo=Math.max(g.bestCombo,g.combo);
+      addScore(220+g.combo*30,now);
+      juiceReward(g.combo%5===0?"power":"snap",300+g.cursor*98,430,.62,g.combo%5===0?`連続 ${g.combo}`:"ポン！");
+      setArcadeCheckpoint("MOLE",{hits:g.hits,bestCombo:g.bestCombo},"MOLE SAVE");
+      if(g.hits>=15){arcadeFinish("MOLE",now,"15匹！");return}
+    }else{
+      g.combo=0;
+      juiceImpact(300+g.cursor*98,430,.2,{label:"スカ",n:3,shake:.5,flash:.01});
+    }
+  }
+}
+
+/* ---------- V21-03 ホームラン競争 ---------- */
+function homerunSpawnPitch(g,now){
+  const lanes=[340,420,495,570,650];
+  const lane=lanes[(g.pitchNo*3+g.homeRuns*2)%lanes.length];
+  g.pitch={x:lane,y:165,vy:315+g.homeRuns*18,hit:false};
+  g.pitchNo++;
+  g.nextPitchAt=now+1500;
+}
+function homerunInit(){
+  const cp=getArcadeCheckpoint("HOMERUN");
+  return {
+    x:495,vx:0,pitch:null,pitchNo:0,nextPitchAt:nowMs()+700,
+    swing:0,homeRuns:Math.max(0,cp?.homeRuns|0),
+    bestDistance:Math.max(0,cp?.bestDistance|0),
+    lastDistance:0,misses:0,flight:null
+  };
+}
+function homerunUpdate(g,dt,now){
+  const dir=(rightDown?1:0)-(leftDown?1:0);
+  g.vx=lerp(g.vx,dir*390,clamp(dt*11,0,1));
+  g.x=clamp(g.x+g.vx*dt,315,675);
+  g.swing=Math.max(0,g.swing-dt);
+
+  if(!g.pitch&&now>=g.nextPitchAt)homerunSpawnPitch(g,now);
+  if(g.pitch){
+    g.pitch.y+=g.pitch.vy*dt;
+
+    if(arcadeActionPressed&&g.swing<=0){
+      g.swing=.18;
+      const dy=Math.abs(g.pitch.y-665);
+      const dx=Math.abs(g.pitch.x-g.x);
+      if(dy<82&&dx<72){
+        const timing=clamp(1-dy/82,0,1);
+        const center=clamp(1-dx/72,0,1);
+        const distance=Math.round(92+timing*42+center*24);
+        g.lastDistance=distance;
+        g.bestDistance=Math.max(g.bestDistance,distance);
+        g.homeRuns++;
+        g.flight={x:g.pitch.x,y:g.pitch.y,vx:(g.pitch.x-g.x)*2.5,vy:-610,life:1};
+        g.pitch=null;
+        addScore(900+distance*8,now);
+        juiceReward("power",g.x,665,1,`${distance}m HOME RUN!`);
+        if(audioReady){
+          deepSubHit(43,.30,now,.30);
+          const snap=snapshotChord();
+          [0,2,4].forEach((d,i)=>warmVoiceSemi(chordTone(d,2+(i===2?1:0),snap),.052,.30,(i-1)*.18,-.06,now+i*26));
+        }
+        setArcadeCheckpoint("HOMERUN",{homeRuns:g.homeRuns,bestDistance:g.bestDistance},"HOME RUN SAVE");
+        if(g.homeRuns>=5){arcadeFinish("HOMERUN",now,"5本ホームラン！");return}
+      }else{
+        g.misses++;
+        juiceImpact(g.x,665,.28,{label:"空振り",n:5,shake:1.2,flash:.02});
+      }
+    }
+
+    if(g.pitch&&g.pitch.y>790){
+      g.pitch=null;
+      g.misses++;
+      g.nextPitchAt=now+650;
+      juiceImpact(495,735,.20,{label:"見逃し",n:3,shake:.5,flash:.01});
+    }
+  }
+
+  if(g.flight){
+    g.flight.x+=g.flight.vx*dt;
+    g.flight.y+=g.flight.vy*dt;
+    g.flight.vy+=420*dt;
+    g.flight.life-=dt;
+    if(g.flight.life<=0)g.flight=null;
+  }
+}
+
+/* ---------- V21-04 金魚すくい ---------- */
+function goldfishMake(i){
+  const bands=[445,505,565,610];
+  return {
+    x:275+(i*83)%440,
+    y:bands[i%bands.length],
+    baseY:bands[i%bands.length],
+    vx:(i%2?1:-1)*(58+(i%4)*16),
+    phase:i*.73,
+    taken:false
+  };
+}
+function goldfishInit(){
+  const cp=getArcadeCheckpoint("GOLDFISH");
+  const g={
+    x:495,vx:0,fish:Array.from({length:12},(_,i)=>goldfishMake(i)),
+    caught:Math.max(0,cp?.caught|0),combo:0,bestCombo:Math.max(0,cp?.bestCombo|0),
+    cool:0,scoopT:0,scoopCaught:false,scoopY:650
+  };
+  return g;
+}
+function goldfishUpdate(g,dt,now){
+  const dir=(rightDown?1:0)-(leftDown?1:0);
+  g.vx=lerp(g.vx,dir*360,clamp(dt*10,0,1));
+  g.x=clamp(g.x+g.vx*dt,255,735);
+  g.cool=Math.max(0,g.cool-dt);
+
+  for(const f of g.fish)if(!f.taken){
+    f.phase+=dt*1.7;
+    f.x+=f.vx*dt;
+    f.y=f.baseY+Math.sin(f.phase)*22;
+    if(f.x<250){f.x=250;f.vx=Math.abs(f.vx)}
+    if(f.x>740){f.x=740;f.vx=-Math.abs(f.vx)}
+  }
+
+  if(arcadeActionPressed&&g.cool<=0&&g.scoopT<=0){
+    g.cool=.30;
+    g.scoopT=.48;
+    g.scoopCaught=false;
+    juiceReward("snap",g.x,650,.24,"すくう！");
+  }
+
+  if(g.scoopT>0){
+    g.scoopT=Math.max(0,g.scoopT-dt);
+    const phase=1-g.scoopT/.48;
+    g.scoopY=650-Math.sin(clamp(phase,0,1)*Math.PI)*155;
+
+    if(!g.scoopCaught){
+      let best=null,bd=999;
+      for(const f of g.fish)if(!f.taken){
+        const d=Math.hypot(f.x-g.x,f.y-g.scoopY);
+        if(d<bd){bd=d;best=f}
+      }
+      // Wide but readable catch zone. If the poi visibly overlaps a fish, it catches.
+      if(best&&bd<62){
+        best.taken=true;
+        g.scoopCaught=true;
+        g.caught++;g.combo++;g.bestCombo=Math.max(g.bestCombo,g.combo);
+        addScore(420+g.combo*55,now);
+        juiceReward(g.combo%4===0?"power":"item",best.x,best.y,.72,
+          g.combo%4===0?`連続 ${g.combo}匹！`:"すくった！");
+        if(audioReady){
+          const snap=snapshotChord();
+          ambientGlassSemi(chordTone((g.caught+2)%5,5,snap),.11,.28,(best.x-495)/350,now,.92);
+          airShimmer(chordTone(4,5,snap),.12,now,.36,(best.x-495)/420);
+        }
+        setArcadeCheckpoint("GOLDFISH",{caught:g.caught,bestCombo:g.bestCombo},"FISH SAVE");
+        if(g.caught>=8){arcadeFinish("GOLDFISH",now,"8匹すくった！");return}
+      }
+    }
+
+    if(g.scoopT<=0){
+      g.scoopY=650;
+      if(!g.scoopCaught){
+        g.combo=0;
+        juiceImpact(g.x,650,.16,{label:"おしい！",n:3,shake:.35,flash:.01});
+      }
+    }
+  }else g.scoopY=650;
+}
+
+/* ---------- V20-05 クレーンゲーム ---------- */
+function cranePrize(i){return {x:300+(i*121)%390,y:655-(i%2)*30,w:55,h:42,taken:false,phase:i*.9}}
+function craneInit(){
+  const cp=getArcadeCheckpoint("CRANE");
+  return {x:495,vx:0,clawY:180,mode:"MOVE",target:null,prizes:Array.from({length:7},(_,i)=>cranePrize(i)),
+          caught:Math.max(0,cp?.caught|0),tries:Math.max(0,cp?.tries|0)};
+}
+function craneUpdate(g,dt,now){
+  const dir=(rightDown?1:0)-(leftDown?1:0);
+  if(g.mode==="MOVE"){
+    g.vx=lerp(g.vx,dir*300,clamp(dt*10,0,1));g.x=clamp(g.x+g.vx*dt,260,730);
+    for(const p of g.prizes)if(!p.taken){p.phase+=dt;p.x+=Math.sin(p.phase)*7*dt}
+    if(arcadeActionPressed){g.mode="DOWN";g.tries++;juiceReward("snap",g.x,190,.28,"おろす！")}
+  }else if(g.mode==="DOWN"){
+    g.clawY+=390*dt;
+    if(g.clawY>=620){
+      let best=null,bd=999;
+      for(const p of g.prizes)if(!p.taken){
+        const d=Math.abs(p.x-g.x);if(d<bd){bd=d;best=p}
+      }
+      if(best&&bd<48){g.target=best;g.target.taken=true}
+      g.mode="UP";
+    }
+  }else if(g.mode==="UP"){
+    g.clawY-=420*dt;
+    if(g.clawY<=180){
+      g.clawY=180;
+      if(g.target){
+        g.caught++;addScore(1100,now);juiceReward("power",g.x,230,.88,`GET! ${g.caught}/3`);
+        setArcadeCheckpoint("CRANE",{caught:g.caught,tries:g.tries},"PRIZE SAVE");
+        g.target=null;
+        if(g.caught>=3){arcadeFinish("CRANE",now,"3個GET！");return}
+      }else juiceImpact(g.x,230,.18,{label:"おしい！",n:3,shake:.4,flash:.01});
+      g.mode="MOVE";
+    }
+  }
+}
+
+/* ---------- V24-10 だるま落とし / SMASH RUSH ---------- */
+function darumaInit(){
+  const cp=getArcadeCheckpoint("DARUMA");
+  const removed=clamp(cp?.removed|0,0,5);
+  return {
+    removed,
+    side:removed%2===0?-1:1,
+    phase:removed*.77,
+    hitLock:0,
+    dropAnim:0,
+    hammerAnim:0,
+    hammerSide:0,
+    flying:[],
+    combo:0,
+    bestCombo:Math.max(0,cp?.bestCombo|0),
+    perfectTotal:Math.max(0,cp?.perfectTotal|0),
+    misses:0,
+    rush:0,
+    lastJudge:"",
+    message:"出っ張った側を A / D で選ぶ",
+    messageUntil:nowMs()+1200,
+    impact:0
+  };
+}
+function darumaOffset(g){
+  // Readable side-to-side slide. It gets faster, never more complicated.
+  return Math.sin(g.phase);
+}
+function darumaExposure(g){return Math.abs(darumaOffset(g))}
+function darumaTargetSide(g){return darumaOffset(g)<0?-1:1}
+function darumaSpeed(g){return 1.45+g.removed*.13+(g.rush>0?.18:0)}
+function darumaBurst(g,now,side,perfect){
+  const y=650-g.removed*56;
+  g.flying.push({
+    x:495+side*20,y,
+    vx:-side*(640+(perfect?180:0)),
+    vy:-(perfect?150:95),
+    rot:0,vr:-side*(perfect?14:10),life:1.35,
+    perfect
+  });
+  g.hammerAnim=.20;g.hammerSide=side;g.dropAnim=.34;g.impact=.22;
+  juiceImpact(495+side*108,y,.90,{label:perfect?"PERFECT!":"SMASH!",n:perfect?28:20,shake:perfect?10:7,flash:perfect?.16:.10});
+  if(audioReady){
+    deepSubHit(perfect?43:41,perfect?.28:.20,now,.34);
+    drumClap(perfect?.64:.46,now+.018);
+    drumPerc(perfect?.52:.36,now+.060,side*.24);
+    if(perfect||g.rush>0)chipNoise(.22,now+.105,.040,-side*.30);
+  }
+}
+function darumaStrike(g,now){
+  if(!g||g.hitLock>0||g.removed>=6)return false;
+  g.hitLock=.28;
+  const target=darumaTargetSide(g);
+  const exposure=darumaExposure(g);
+  const correct=g.side===target;
+
+  if(correct&&exposure>=.60){
+    const perfect=exposure>=.90;
+    g.combo++;
+    g.bestCombo=Math.max(g.bestCombo,g.combo);
+    if(perfect)g.perfectTotal++;
+    if(g.combo>=3)g.rush=Math.max(g.rush,3);
+    const side=g.side;
+    darumaBurst(g,now,side,perfect);
+    g.removed++;
+    if(g.rush>0)g.rush--;
+    addScore((perfect?1050:620)+g.combo*120,now);
+    g.lastJudge=perfect?"PERFECT":"SMASH";
+    g.message=perfect?(g.combo>=3?"RUSH! 次も一撃！":"芯！ PERFECT!"):"抜けた！ 次！";
+    g.messageUntil=now+720;
+    setArcadeCheckpoint("DARUMA",{
+      removed:g.removed,bestCombo:g.bestCombo,perfectTotal:g.perfectTotal
+    },"DARUMA SMASH SAVE");
+    if(g.removed>=6){
+      // Keep this path deliberately tiny and deterministic.
+      arcadeFinish("DARUMA",now,g.bestCombo>=4?"6段 / SMASH RUSH!":"6段クリア！");
+    }
+    return true;
+  }
+
+  g.combo=0;g.rush=0;g.misses++;
+  g.lastJudge=!correct?"反対側！":"まだ早い！";
+  g.message=!correct?"出っ張った側から叩く！":"もっと出てから SPACE！";
+  g.messageUntil=now+760;
+  g.hammerAnim=.16;g.hammerSide=g.side;g.impact=.10;
+  juiceImpact(495+g.side*105,650-g.removed*56,.34,{label:g.lastJudge,n:6,shake:2,flash:.025});
+  if(audioReady){drumPerc(.20,now,g.side*.28);chipNoise(.08,now,.018,0)}
+  if(g.misses>=3){
+    setArcadeCheckpoint("DARUMA",{
+      removed:g.removed,bestCombo:g.bestCombo,perfectTotal:g.perfectTotal
+    },"DARUMA FAIL");
+    leaveBonus(now,false);
+  }
+  return false;
+}
+function darumaUpdate(g,dt,now){
+  if(!g)return;
+  const safeDt=clamp(Number.isFinite(dt)?dt:0,0,.05);
+  g.phase+=safeDt*darumaSpeed(g)*Math.PI*2;
+  g.hitLock=Math.max(0,g.hitLock-safeDt);
+  g.dropAnim=Math.max(0,g.dropAnim-safeDt);
+  g.hammerAnim=Math.max(0,g.hammerAnim-safeDt);
+  g.impact=Math.max(0,g.impact-safeDt);
+
+  if(arcadeLeftPressed){g.side=-1;g.message="左から叩く";g.messageUntil=now+320}
+  if(arcadeRightPressed){g.side=1;g.message="右から叩く";g.messageUntil=now+320}
+  if(arcadeActionPressed)darumaStrike(g,now);
+
+  for(const b of g.flying){
+    b.x+=b.vx*safeDt;b.y+=b.vy*safeDt;b.vy+=690*safeDt;
+    b.rot+=b.vr*safeDt;b.life-=safeDt;
+  }
+  g.flying=g.flying.filter(b=>Number.isFinite(b.x)&&Number.isFinite(b.y)&&b.life>0);
 }
 
 /* ---------- HUB + common update ---------- */
@@ -7115,16 +8567,57 @@ function arcadeUpdate(dt,now){
   else if(id==="WAVE")waveUpdate(g,dt,now);
   else if(id==="CIRCUIT")circuitUpdate(g,dt,now);
   else if(id==="MEMORY")memoryUpdate(g,dt,now);
-  else if(id==="DREAM")dreamUpdate(g,dt,now);
+  else if(id==="TEMPEST")tempestUpdate(g,dt,now);
+  else if(id==="LANDER")landerUpdate(g,dt,now);
+  else if(id==="JOUST")joustUpdate(g,dt,now);
+  else if(id==="BUBBLE")bubbleUpdate(g,dt,now);
+  else if(id==="DROP")dropUpdate(g,dt,now);
+  else if(id==="MOLE")moleUpdate(g,dt,now);
+  else if(id==="HOMERUN")homerunUpdate(g,dt,now);
+  else if(id==="GOLDFISH")goldfishUpdate(g,dt,now);
+  else if(id==="CRANE")craneUpdate(g,dt,now);
+  else if(id==="DARUMA")darumaUpdate(g,dt,now);
   arcadeResetEdges();
 }
 
 /* ---------- drawing ---------- */
+function storyGoalStatus(id){
+  if(id==="BREAKOUT")return {label:"ブロックを全部こわせ！",value:bonusGame.broken||0,max:24,phase:""};
+  if(id==="DRIVE"){const r=bonusGame.race;return {label:"2000m走りきれ！",value:r?Math.min(r.distanceM,r.targetM):0,max:r?.targetM||2000,phase:""}}
+  if(id==="KINGDOM"){const k=bonusGame.kingdom;return {label:"ゴールまで行け！",value:k?Math.min(k.player.x,k.goalX):0,max:k?.goalX||4140,phase:`CP ${k?.checkpoint||0}/3`}}
+  if(id==="SHOOTER"){const g=ARCADE15.g;return g?{label:"敵をぜんぶ撃て！",value:g.kills,max:20,phase:`ライフ ${g.lives}`} : null}
+  if(id==="DROP"){const g=ARCADE15.g;return g?{label:"同じ色を4つ！",value:Math.min(g.cleared,20),max:20,phase:g.chain>=2?`${g.chain}れんさ`:""} : null}
+  if(id==="MOLE"){const g=ARCADE15.g;return g?{label:"モグラを叩け！",value:g.hits,max:15,phase:`連続 ${g.combo}`} : null}
+  if(id==="HOMERUN"){const g=ARCADE15.g;return g?{label:"5本ホームラン！",value:g.homeRuns,max:5,phase:g.lastDistance?`直前 ${g.lastDistance}m`:"球をよく見ろ"} : null}
+  if(id==="GOLDFISH"){const g=ARCADE15.g;return g?{label:"金魚をすくえ！",value:g.caught,max:8,phase:`連続 ${g.combo}`} : null}
+  if(id==="CRANE"){const g=ARCADE15.g;return g?{label:"景品を取れ！",value:g.caught,max:3,phase:`挑戦 ${g.tries}`} : null}
+  if(id==="DARUMA"){const g=ARCADE15.g;return g?{
+    label:"出っ張った側から6段！",
+    value:g.removed,max:6,
+    phase:`COMBO ×${g.combo} · ミス ${g.misses}/3`
+  } : null}
+  return null;
+}
+function drawStoryGoalHUD(){
+  const id=ARCADE15.active||currentStoryDef()?.id;
+  const q=storyGoalStatus(id);if(!q)return;
+  const max=Math.max(1,q.max||1),v=clamp(q.value||0,0,max),p=v/max;
+  // Dedicated left-side goal card: never competes with the playfield.
+  const x=20,y=50,w=154,h=76;
+  ctx.save();ctx.globalAlpha=.96;
+  rect(x,y,w,h,C.paper);rect(x+1,y+1,w-2,h-2,C.bg);
+  text("クリア条件",x+10,y+15,4.2,C.muted,"left",850);
+  text(q.label,x+10,y+34,4.8,C.paper,"left",900);
+  text(`${Math.floor(v)} / ${Math.floor(max)}`,x+10,y+52,7,C.cool,"left",900);
+  if(q.phase)text(q.phase,x+w-8,y+51,3.7,C.muted,"right",800);
+  rect(x+10,y+61,w-20,5,C.soft);rect(x+10,y+61,(w-20)*p,5,C.accent);ctx.restore();
+}
 function arcadeHeader(def,sub=""){
   rect(0,0,960,900,C.bg);rect(0,0,960,34,C.accent);
   text(`${String(ARCADE15.select+1).padStart(2,"0")}  ${def.name}`,24,23,9,C.bg,"left",900);
   text(def.role,936,23,7,C.bg,"right",900);
   if(sub)text(sub,495,75,6,C.cool,"center",840);
+  if(STORY_STAGES.some(x=>x.id===def.id))drawStoryGoalHUD();
 }
 
 function drawArcadeHub(){
@@ -7152,22 +8645,25 @@ function drawArcadeHub(){
 
 function drawStatic(g){
   const def=ARCADE_DEFS[0];arcadeHeader(def,`CLEAR 6 LINES · ${g.lines}/6`);
-  const ox=325,oy=135,cs=31;
-  rect(ox-5,oy-5,320,506,C.soft);
-  for(let r=0;r<16;r++)for(let c=0;c<10;c++){
+  const ox=355,oy=118,cs=25;
+  rect(ox-5,oy-5,260,510,C.soft);
+  for(let r=0;r<20;r++)for(let c=0;c<10;c++){
     const on=g.board[r][c];rect(ox+c*cs,oy+r*cs,cs-2,cs-2,on?C.cool:C.bg);
   }
-  let ghostY=g.y;
-  while(staticValid(g,g.x,ghostY+1,g.piece))ghostY++;
+  let ghostY=g.y;while(staticValid(g,g.x,ghostY+1,g.piece))ghostY++;
   for(let r=0;r<g.piece.length;r++)for(let c=0;c<g.piece[r].length;c++)if(g.piece[r][c]){
-    const gx=ox+(g.x+c)*cs,gy=oy+(ghostY+r)*cs;
-    rect(gx+7,gy+7,cs-16,cs-16,C.soft);
+    const gx=ox+(g.x+c)*cs,gy=oy+(ghostY+r)*cs;rect(gx+6,gy+6,cs-14,cs-14,C.soft);
   }
   for(let r=0;r<g.piece.length;r++)for(let c=0;c<g.piece[r].length;c++)if(g.piece[r][c]){
     const x=ox+(g.x+c)*cs,y=oy+(g.y+r)*cs;rect(x,y,cs-2,cs-2,C.accent);
   }
-  text("A/D MOVE · SPACE ROTATE",495,700,6,C.paper,"center",850);
-  text(`LINES ${g.lines} · CHAIN ${g.chain}`,495,744,6,C.cool,"center",850);
+  text(`HOLD ${g.hold||'—'}`,245,165,6,C.cool,"center",850);
+  text("NEXT",715,165,6,C.cool,"center",850);
+  g.next.slice(0,3).forEach((n,i)=>text(n,715,195+i*28,9,i===0?C.paper:C.muted,"center",900));
+  text("←/A  MOVE  →/D",495,650,6,C.paper,"center",850);
+  text("↓/S  SOFT DROP    SPACE  HARD DROP",495,675,6,C.paper,"center",850);
+  text("↑/X  ROTATE CW    Z  ROTATE CCW    C/SHIFT  HOLD",495,700,5.6,C.cool,"center",850);
+  text(`GOAL  CLEAR 6 LINES   ·   ${Math.min(g.lines,6)}/6`,495,744,7,C.accent,"center",900);
 }
 function drawScratch(g){
   arcadeHeader(ARCADE_DEFS[1],`HIT 20 NOTES · ${g.hits}/20`);
@@ -7180,65 +8676,56 @@ function drawScratch(g){
   if(nowMs()<g.judgeUntil)text(g.lastJudgement,495,610,14,g.lastJudgement==="PERFECT"?C.accent:C.paper,"center",950);
 }
 function drawMaze(g){
-  arcadeHeader(ARCADE_DEFS[2],"AUTO RUN · A/D QUEUE TURN · SPACE SONAR");
+  arcadeHeader(ARCADE_DEFS[2],"A / D SELECT ROUTE · SPACE DASH TO NEXT JUNCTION");
   const cs=62,ox=139,oy=145,now=nowMs();
-  const sonar=now<g.sonarUntil?clamp((g.sonarUntil-now)/900,0,1):0;
-  const reveal=sonar>0?99:2;
+  const pulse=now<g.sonarUntil?clamp((g.sonarUntil-now)/420,0,1):0;
 
-  // Maze itself appears from darkness around the runner; sonar reveals the whole structure.
+  // Entire topology is faintly visible now. The game is about route choice, not blindness.
   ctx.save();
-  ctx.globalAlpha=.28+.72*sonar;
   for(let y=0;y<g.h;y++)for(let x=0;x<g.w;x++){
-    const dist=Math.abs(x-g.x)+Math.abs(y-g.y);if(dist>reveal)continue;
     const c=g.cells[y][x],px=ox+x*cs,py=oy+y*cs;
-    const alpha=sonar>0?(.20+.65*sonar):clamp(1-dist*.28,.12,1);
-    ctx.globalAlpha=alpha;
-    if(c.walls[0])line(px,py,px+cs,py,C.paper,1.4+sonar*1.8);
-    if(c.walls[1])line(px+cs,py,px+cs,py+cs,C.paper,1.4+sonar*1.8);
-    if(c.walls[2])line(px,py+cs,px+cs,py+cs,C.paper,1.4+sonar*1.8);
-    if(c.walls[3])line(px,py,px,py+cs,C.paper,1.4+sonar*1.8);
+    ctx.globalAlpha=.26+pulse*.18;
+    if(c.walls[0])line(px,py,px+cs,py,C.paper,1.15);
+    if(c.walls[1])line(px+cs,py,px+cs,py+cs,C.paper,1.15);
+    if(c.walls[2])line(px,py+cs,px+cs,py+cs,C.paper,1.15);
+    if(c.walls[3])line(px,py,px,py+cs,C.paper,1.15);
   }
   ctx.restore();
 
-  // Interpolated player position gives continuous movement instead of grid-step popping.
-  const d=[[0,-1],[1,0],[0,1],[-1,0]][g.dir];
-  const px=ox+(g.x+.5+d[0]*g.moveT)*cs,py=oy+(g.y+.5+d[1]*g.moveT)*cs;
+  // Compute smooth position while dashing.
+  const ix=g.dashing?lerp(g.fromX,g.toX,clamp(g.dashT,0,1)):g.x;
+  const iy=g.dashing?lerp(g.fromY,g.toY,clamp(g.dashT,0,1)):g.y;
+  const px=ox+(ix+.5)*cs,py=oy+(iy+.5)*cs;
 
-
-  // Memory beacons pulse even through darkness when sonar is active.
+  // Memories are always readable; this stage should never fail because information was hidden.
   for(const e of g.echoes){
     if(e.taken)continue;
-    const md=Math.abs(e.x-g.x)+Math.abs(e.y-g.y);
-    if(md<=3||sonar>0){
-      const ex=ox+(e.x+.5)*cs,ey=oy+(e.y+.5)*cs,p=.5+.5*Math.sin(now*.008+e.x);
-      ctx.save();ctx.globalAlpha=sonar>0?.92:clamp(1-md*.20,.2,.8);
-      circle(ex,ey,11+p*4,e.color);circle(ex,ey,22+p*10,null,e.color,1.3+p);
-      if(sonar>.2)text(e.label,ex,ey-27,4.5,e.color,"center",850);
-      ctx.restore();
+    const ex=ox+(e.x+.5)*cs,ey=oy+(e.y+.5)*cs,p=.5+.5*Math.sin(now*.008+e.x);
+    ctx.save();ctx.globalAlpha=.55+p*.28;
+    circle(ex,ey,8+p*3,e.color);circle(ex,ey,18+p*6,null,e.color,1.1+p*.7);
+    text(e.label,ex,ey-22,4,e.color,"center",820);ctx.restore();
+  }
+  const gx=ox+(g.goalX+.5)*cs,gy=oy+(g.goalY+.5)*cs;
+  circle(gx,gy,16,null,g.goalOpen?C.accent:C.muted,g.goalOpen?2.2:1.0);
+  text(g.goalOpen?"HOME":"LOCK",gx,gy+4,4.5,g.goalOpen?C.accent:C.muted,"center",850);
+
+  // At a junction, draw every legal choice and highlight the selected one.
+  const arrows=["↑","→","↓","←"];
+  if(!g.dashing){
+    for(let i=0;i<g.choices.length;i++){
+      const dir=g.choices[i],selected=i===g.choiceIndex;
+      const dv=[[0,-1],[1,0],[0,1],[-1,0]][dir];
+      const ax=px+dv[0]*28,ay=py+dv[1]*28+5;
+      circle(ax,ay,selected?13:9,selected?C.accent:C.soft,C.paper,1);
+      text(arrows[dir],ax,ay+4,selected?8:6,selected?C.bg:C.paper,"center",900);
     }
   }
+  circle(px,py,g.dashing?11:14,g.dashing?C.cool:C.paper,C.accent,1.4);
 
-  if(g.goalOpen||sonar>0){
-    const gx=ox+(g.goalX+.5)*cs,gy=oy+(g.goalY+.5)*cs,p=.5+.5*Math.sin(now*.006);
-    circle(gx,gy,18+p*7,null,g.goalOpen?C.accent:C.muted,2+p*2);
-    if(g.goalOpen)text("HOME",gx,gy+4,5,C.accent,"center",900);
-  }
-
-  // Sonar wave expands from the moving runner.
-  if(sonar>0){
-    const q=1-sonar;
-    circle(px,py,35+q*360,null,C.cool,1+sonar*3);
-    circle(px,py,18+q*210,null,C.paper,.7+sonar*2);
-  }
-
-  // Runner / heading / queued turn indicator.
-  circle(px,py,13,C.accent);circle(px,py,22,null,C.paper,1.2);
-  line(px,py,px+d[0]*25,py+d[1]*25,C.bg,4);
-  const turn=g.turnIntent<0?"← NEXT":g.turnIntent>0?"NEXT →":"FLOW";
-  text(turn,495,755,7,g.turnIntent?C.accent:C.cool,"center",900);
-  text(`MEMORY ${g.found}/3 · FLOW ×${g.combo} · BEST ×${g.bestCombo}`,495,790,6,g.goalOpen?C.accent:C.paper,"center",850);
-  text(g.goalOpen?"HOME IS OPEN — FIND THE EXIT":"FIND RAIN / TRAIN / ROOM",495,820,5.5,g.goalOpen?C.accent:C.muted,"center",820);
+  text(`MEMORY ${g.found}/3   ·   JUNCTION ${g.choices.length} WAYS   ·   STEPS ${g.steps}`,495,790,5.5,C.cool,"center",850);
+  text(g.dashing?"DASHING...":"A / D SELECT   ·   SPACE GO",495,825,7,g.dashing?C.muted:C.paper,"center",900);
 }
+
 function drawTennis(g){
   arcadeHeader(ARCADE_DEFS[3],`RALLY 24 · ${g.rally}/24`);
   rect(200,130,590,640,null,C.paper,2);line(200,450,790,450,C.line,1);
@@ -7261,19 +8748,31 @@ function drawFishing(g){
   text("A/D BOAT · SPACE CAST / REEL",495,820,6,C.paper,"center",850);
 }
 function drawShooter(g){
-  arcadeHeader(ARCADE_DEFS[9],`DESTROY 20 · ${g.kills}/20`);
-  for(const e of g.enemies)if(e.alive){rect(e.x-20,e.y-15,40,30,C.paper);rect(e.x-10,e.y-7,6,6,C.bg);rect(e.x+4,e.y-7,6,6,C.bg)}
-  for(const b of g.bullets)line(b.x,b.y,b.x,b.y+18,C.accent,3);
-  rect(g.x-28,735,56,24,C.cool);text("A/D MOVE · SPACE FIRE",495,820,6,C.paper,"center",850);
+  const def=ARCADE_DEFS.find(d=>d.id==="SHOOTER");
+  arcadeHeader(def,`敵20体 · ${g.kills}/20　ライフ ${g.lives}`);
+  for(const e of g.enemies)if(e.alive){
+    rect(e.x-24,e.y-15,48,30,C.paper);
+    rect(e.x-13,e.y-6,7,6,C.bg);rect(e.x+6,e.y-6,7,6,C.bg);
+    line(e.x-20,e.y+18,e.x-10,e.y+28,C.paper,4);line(e.x+20,e.y+18,e.x+10,e.y+28,C.paper,4);
+  }
+  for(const b of g.bullets)line(b.x,b.y,b.x,b.y+18,C.accent,4);
+  for(const b of g.enemyBullets)circle(b.x,b.y,7,C.cool);
+  const blink=nowMs()<g.invulnUntil&&Math.floor(nowMs()/80)%2===0;
+  if(!blink){rect(g.x-28,735,56,20,C.accent);line(g.x,715,g.x,735,C.paper,5)}
+  text("A / D で移動　　SPACE で撃つ",495,790,7,C.paper,"center",900);
+  text(`あと ${Math.max(0,20-g.kills)}体`,495,830,7,C.accent,"center",900);
 }
 function drawClimber(g){
-  arcadeHeader(ARCADE_DEFS[10],`CLIMB 1800 · ${Math.floor(g.height)}/1800`);
+  arcadeHeader(ARCADE_DEFS[10],`ASCEND 1800m · ${Math.floor(g.height)}/1800 · ECHO ×${g.combo}`);
   for(const p of g.plats){
-    const sy=p.y+g.cam;if(sy<120||sy>810)continue;line(p.x-p.w/2,sy,p.x+p.w/2,sy,C.paper,8);
+    const sy=p.y+g.cam;if(sy<120||sy>810)continue;
+    line(p.x-p.w/2,sy,p.x+p.w/2,sy,p.move?C.cool:C.paper,p.move?7:9);
   }
   rect(g.x-16,g.y-20,32,40,C.accent);
   const prog=clamp(g.height/1800,0,1);rect(875,150,14,620,C.soft);rect(875,770-620*prog,14,620*prog,C.cool);
-  text("A/D STEER · AUTO BOUNCE",495,820,6,C.paper,"center",850);
+  [600,1200].forEach(h=>{const y=770-620*(h/1800);line(868,y,896,y,C.muted,1)});
+  text(`CHECKPOINT ${g.checkpoint}m · FALL ${g.fallCount} · BEST ECHO ×${g.bestCombo}`,495,785,5.5,C.cool,"center",850);
+  text("A/D STEER · SCREEN WRAPS · AUTO BOUNCE",495,820,6,C.paper,"center",850);
 }
 function drawWave(g){
   arcadeHeader(ARCADE_DEFS[11],`SURF 14 SEC · ${g.flow.toFixed(1)}/14`);
@@ -7312,17 +8811,223 @@ function drawMemory(g){
   text(`PAIR ${g.pairs}/6 · MEMORY COMBO ×${g.combo} · BEST ×${g.best}`,495,735,5.5,C.cool,"center",850);
   text("A/D SELECT · SPACE LISTEN / FLIP",495,775,6,C.paper,"center",850);
 }
-function drawDream(g){
-  arcadeHeader(ARCADE_DEFS[14],`CHOOSE 3 FEELINGS · ${g.round}/3`);
-  const cx=495,cy=440;
-  for(let i=0;i<6;i++){
-    const a=-Math.PI/2+i*Math.PI*2/6,x=cx+Math.cos(a)*215,y=cy+Math.sin(a)*215,sel=i===g.select;
-    circle(x,y,sel?58:46,sel?C.accent:C.soft);circle(x,y,sel?50:39,C.bg);
-    text(DREAM_WORLDS[i],x,y+4,5.5,sel?C.paper:C.muted,"center",900);
+function drawTempest(g){
+  const def=ARCADE_DEFS.find(d=>d.id==="TEMPEST");
+  arcadeHeader(def,`TUBE ${g.wave+1}/3 · LIFE ${g.lives} · VECTOR ×${g.combo}`);
+  const cx=495,cy=450;
+  for(let r=70;r<=285;r+=43)circle(cx,cy,r,null,C.line,1);
+  for(let i=0;i<16;i++){
+    const a=i/16*Math.PI*2-Math.PI/2;
+    line(cx+Math.cos(a)*58,cy+Math.sin(a)*58,cx+Math.cos(a)*292,cy+Math.sin(a)*292,C.line,.8);
   }
-  circle(cx,cy,72,null,C.cool,2);text(g.choices.map(i=>DREAM_WORLDS[i][0]).join(" · ")||"WORLD",cx,cy+5,8,C.paper,"center",900);
-  text("A/D SELECT · SPACE COMMIT",495,785,6,C.paper,"center",850);
+  for(const e of g.enemies)if(e.alive&&e.r>18){
+    const a=e.lane/16*Math.PI*2-Math.PI/2,x=cx+Math.cos(a)*e.r,y=cy+Math.sin(a)*e.r;
+    circle(x,y,e.type?11:8,e.type?C.accent:C.paper);
+  }
+  for(const b of g.bullets){
+    const x=cx+Math.cos(b.theta)*b.r,y=cy+Math.sin(b.theta)*b.r;
+    circle(x,y,5,C.cool);
+  }
+  const px=cx+Math.cos(g.theta)*292,py=cy+Math.sin(g.theta)*292;
+  circle(px,py,16,C.accent);line(px,py,cx+Math.cos(g.theta)*260,cy+Math.sin(g.theta)*260,C.paper,4);
+  text("A/D ORBIT · SPACE FIRE · MOVE AWAY FROM RIM IMPACTS",495,820,5.8,C.paper,"center",850);
 }
+function drawLander(g){
+  const def=ARCADE_DEFS.find(d=>d.id==="LANDER");
+  arcadeHeader(def,`SOFT LAND ${g.landings}/3 · FUEL ${Math.floor(g.fuel)}%`);
+  const gy=735;
+  line(220,gy,770,gy,C.paper,2);
+  for(const p of LANDER_PADS){
+    line(p.x-p.w/2,gy,p.x+p.w/2,gy,p.m===3?C.accent:C.cool,8);
+    text(`×${p.m}`,p.x,gy+32,5,p.m===3?C.accent:C.cool,"center",900);
+  }
+  ctx.save();ctx.translate(g.x,g.y);ctx.rotate(g.angle);
+  line(-18,16,0,-18,C.paper,3);line(0,-18,18,16,C.paper,3);line(-18,16,18,16,C.paper,3);
+  if(arcadeActionDown&&g.fuel>0){line(-7,18,0,34,C.accent,3);line(7,18,0,34,C.accent,3)}
+  ctx.restore();
+  const speed=Math.hypot(g.vx,g.vy);
+  text(`SPEED ${speed.toFixed(0)} · ANGLE ${Math.round(g.angle*180/Math.PI)}°`,495,790,5.5,C.cool,"center",850);
+  text("A/D TILT · HOLD SPACE THRUST · LAND UPRIGHT & SLOW",495,820,5.8,C.paper,"center",850);
+}
+function drawJoust(g){
+  const def=ARCADE_DEFS.find(d=>d.id==="JOUST");
+  arcadeHeader(def,`WAVE ${g.wave+1}/3 · LIFE ${g.lives} · TOP ×${g.combo}`);
+  line(205,790,785,790,C.line,2);
+  for(const e of g.enemies)if(e.alive){
+    circle(e.x,e.y,18,C.paper);line(e.x-24,e.y,e.x+24,e.y,C.cool,4);
+  }
+  const blink=nowMs()<g.invulnUntil&&Math.floor(nowMs()/90)%2===0;
+  if(!blink){circle(g.x,g.y,19,C.accent);line(g.x-26,g.y,g.x+26,g.y,C.paper,4)}
+  text(`KILLS ${g.kills} · BEST TOP ×${g.bestCombo}`,495,785,5.5,C.cool,"center",850);
+  text("A/D DRIFT · SPACE FLAP · HIT ENEMIES FROM ABOVE",495,820,5.8,C.paper,"center",850);
+}
+function drawBubble(g){
+  const def=ARCADE_DEFS.find(d=>d.id==="BUBBLE");
+  arcadeHeader(def,`POP 30 · ${g.popped}/30 · CASCADE ×${g.chain}`);
+  const glyph=["●","◆","■","▲"];
+  for(let r=0;r<10;r++)for(let c=0;c<8;c++)if(g.grid[r][c]>=0){
+    const p=bubbleCellXY(r,c),v=g.grid[r][c];
+    circle(p.x,p.y,20,v===0?C.paper:v===1?C.cool:v===2?C.accent:C.muted);
+    text(glyph[v],p.x,p.y+5,7,C.bg,"center",900);
+  }
+  const a=g.angle;
+  line(495,770,495+Math.sin(a)*95,770-Math.cos(a)*95,C.paper,3);
+  circle(495,770,22,g.nextColor===0?C.paper:g.nextColor===1?C.cool:g.nextColor===2?C.accent:C.muted);
+  if(g.shot)circle(g.shot.x,g.shot.y,18,g.shot.color===0?C.paper:g.shot.color===1?C.cool:g.shot.color===2?C.accent:C.muted);
+  text(`MISSES ${g.misses%4}/4 → CEILING DOWN · BEST CASCADE ×${g.bestChain}`,495,790,5.2,C.cool,"center",850);
+  text("A/D AIM · SPACE SHOOT · MATCH 3 · HANGING BUBBLES DROP",495,820,5.6,C.paper,"center",850);
+}
+
+function v20Color(v){return v===0?C.paper:v===1?C.cool:v===2?C.accent:C.muted}
+
+function drawDrop(g){
+  const def=ARCADE_DEFS.find(d=>d.id==="DROP");arcadeHeader(def,`20こ消す · ${g.cleared}/20`);
+  const ox=360,oy=145,cs=42;
+  rect(ox-8,oy-8,cs*6+16,cs*12+16,C.soft);
+  for(let r=0;r<12;r++)for(let c=0;c<6;c++){
+    rect(ox+c*cs,oy+r*cs,cs-3,cs-3,C.bg);
+    if(g.board[r][c]>=0)circle(ox+c*cs+cs/2,oy+r*cs+cs/2,16,v20Color(g.board[r][c]));
+  }
+  for(const q of dropCells(g.piece)){
+    if(q.y>=0)circle(ox+q.x*cs+cs/2,oy+q.y*cs+cs/2,17,v20Color(q.c));
+  }
+  text("同じ色を4つつなげると消える！",495,690,7,C.paper,"center",900);
+  text("A / D 移動　　SPACE 回転",495,730,6,C.cool,"center",850);
+  text(`消した数 ${g.cleared}/20${g.chain>=2?`　${g.chain}れんさ！`:""}`,495,785,6,C.accent,"center",900);
+}
+function drawMole(g){
+  const def=ARCADE_DEFS.find(d=>d.id==="MOLE");arcadeHeader(def,`15匹叩く · ${g.hits}/15`);
+  text("出たら叩く！",495,170,10,C.paper,"center",950);
+  for(let i=0;i<5;i++){
+    const x=300+i*98,y=445,sel=i===g.cursor,on=g.holes[i]>0;
+    circle(x,y,42,C.soft);circle(x,y+8,32,C.bg);
+    if(on){circle(x,y-5,25,C.accent);circle(x-9,y-9,3,C.bg);circle(x+9,y-9,3,C.bg)}
+    if(sel)circle(x,y,50,null,C.paper,3);
+    text(String(i+1),x,y+72,4,C.muted,"center",800);
+  }
+  text(`15匹でクリア　　いま ${g.hits}/15`,495,690,7,C.accent,"center",900);
+  text("A / D で選ぶ　　SPACE で叩く",495,745,6,C.paper,"center",850);
+}
+function drawHomerun(g){
+  const def=ARCADE_DEFS.find(d=>d.id==="HOMERUN");arcadeHeader(def,`5本ホームラン · ${g.homeRuns}/5`);
+  // batting cage
+  line(260,150,730,150,C.line,1);line(300,760,690,760,C.paper,2);
+  [340,420,495,570,650].forEach(x=>line(x,175,x,725,C.line,.45));
+
+  if(g.pitch)circle(g.pitch.x,g.pitch.y,11,C.paper);
+  if(g.flight)circle(g.flight.x,g.flight.y,9,C.accent);
+
+  // batter + bat
+  circle(g.x,650,18,C.accent);
+  line(g.x,668,g.x,712,C.paper,6);
+  line(g.x-14,728,g.x,710,C.paper,5);line(g.x+14,728,g.x,710,C.paper,5);
+  const swingA=g.swing>0?-0.75:-0.18;
+  line(g.x+6,674,g.x+Math.cos(swingA)*72,674+Math.sin(swingA)*72,C.cool,8);
+  // The line above is replaced below in cleanup because JS has no Python conditional.
+  text("ボールがバットの前に来たら SPACE！",495,790,6.8,C.paper,"center",900);
+  text(`HOME RUN ${g.homeRuns}/5　BEST ${g.bestDistance||0}m`,495,830,6.5,C.accent,"center",900);
+}
+function drawGoldfish(g){
+  const def=ARCADE_DEFS.find(d=>d.id==="GOLDFISH");arcadeHeader(def,`8匹すくう · ${g.caught}/8`);
+  rect(220,150,550,535,C.soft);
+  for(let i=0;i<9;i++)line(220,190+i*55,770,190+i*55,C.line,.48);
+  for(const f of g.fish)if(!f.taken){
+    ctx.save();ctx.translate(f.x,f.y);
+    circle(0,0,13,C.accent);
+    ctx.beginPath();ctx.moveTo(-10,0);ctx.lineTo(-30,-13);ctx.lineTo(-30,13);ctx.closePath();ctx.fillStyle=C.accent;ctx.fill();
+    circle(6,-3,2,C.bg);
+    ctx.restore();
+  }
+  circle(g.x,g.scoopY,43,null,C.paper,g.scoopT>0?4:2);
+  line(g.x+30,g.scoopY+28,g.x+62,g.scoopY+78,C.paper,3);
+  if(g.scoopT>0)circle(g.x,g.scoopY,50,null,C.cool,1.5);
+  text("ポイを金魚に重ねて SPACE！",495,725,7,C.paper,"center",900);
+  text(`すくった ${g.caught}/8　　連続 ${g.combo}`,495,785,7,C.accent,"center",900);
+}
+function drawCrane(g){
+  const def=ARCADE_DEFS.find(d=>d.id==="CRANE");arcadeHeader(def,`景品3個 · ${g.caught}/3`);
+  line(235,145,755,145,C.paper,4);
+  line(g.x,145,g.x,g.clawY,C.cool,3);
+  line(g.x-22,g.clawY,g.x,g.clawY+28,C.paper,4);line(g.x+22,g.clawY,g.x,g.clawY+28,C.paper,4);
+  for(const p of g.prizes)if(!p.taken){
+    rect(p.x-p.w/2,p.y-p.h/2,p.w,p.h,C.soft);rect(p.x-p.w/2+5,p.y-p.h/2+5,p.w-10,p.h-10,C.accent);
+  }
+  text("景品の真上で SPACE！",495,730,7,C.paper,"center",900);
+  text(`GET ${g.caught}/3　　挑戦 ${g.tries}`,495,790,6,C.accent,"center",900);
+}
+function drawDaruma(g){
+  if(!g)return;
+  const def=ARCADE_DEFS.find(d=>d.id==="DARUMA");
+  arcadeHeader(def,`6段叩き抜く · ${g.removed}/6　COMBO ×${g.combo}`);
+
+  const cx=495,baseY=690,blockW=235,blockH=56;
+  const remain=Math.max(0,6-g.removed);
+  const off=darumaOffset(g);
+  const exposure=Math.abs(off);
+  const target=off<0?-1:1;
+  const slide=off*72;
+  const drop=g.dropAnim>0?Math.sin((1-g.dropAnim/.34)*Math.PI)*28:0;
+
+  line(230,730,760,730,C.line,2);
+  rect(360,715,270,12,C.soft);
+
+  // Remaining tower. Only the lowest block slides; the rule is visible in the object itself.
+  for(let i=0;i<remain;i++){
+    const y=baseY-i*blockH+drop;
+    const active=i===0;
+    const x=cx+(active?slide:0);
+    rect(x-blockW/2,y-blockH+5,blockW,blockH-9,active?C.paper:(i%2?C.cool:C.muted));
+    rect(x-blockW/2+8,y-blockH+13,blockW-16,blockH-25,C.bg);
+    if(active){
+      // Bright impact cap on the protruding side.
+      const capX=x+target*(blockW/2-12);
+      circle(capX,y-25,exposure>=.90?16:11,exposure>=.60?C.accent:C.cool);
+      if(exposure>=.60)text(exposure>=.90?"PERFECT":"HIT",capX,y-62,5,C.accent,"center",950);
+    }
+  }
+
+  // Daruma falls one whole tier after every successful strike.
+  const topY=baseY-remain*blockH+drop-5;
+  circle(cx,topY-47,56,C.accent);
+  circle(cx-18,topY-58,7,C.paper);circle(cx+18,topY-58,7,C.paper);
+  circle(cx-18,topY-58,3,C.bg);circle(cx+18,topY-58,3,C.bg);
+  line(cx-20,topY-25,cx+20,topY-25,C.bg,3);
+
+  // Hammer selection. One side glows; A/D simply swaps sides.
+  for(const side of [-1,1]){
+    const hx=side<0?225:765;
+    const selected=g.side===side;
+    const anim=(g.hammerAnim>0&&g.hammerSide===side)?Math.sin((1-g.hammerAnim/.20)*Math.PI)*82:0;
+    const dir=side<0?1:-1;
+    line(hx,600,hx+dir*(68+anim),625,selected?C.paper:C.muted,selected?13:8);
+    rect(hx+dir*(76+anim)-34,594,68,54,selected?C.accent:C.soft);
+    text(side<0?"A  LEFT":"D  RIGHT",hx,682,5.5,selected?C.paper:C.muted,"center",900);
+  }
+
+  // Flying blocks = primary spectacle.
+  for(const b of g.flying){
+    ctx.save();ctx.translate(b.x,b.y);ctx.rotate(b.rot);
+    rect(-blockW/2,-blockH/2,blockW,blockH-9,b.perfect?C.accent:C.cool);
+    rect(-blockW/2+8,-blockH/2+8,blockW-16,blockH-25,C.bg);
+    ctx.restore();
+  }
+
+  const ready=exposure>=.60&&g.side===target;
+  const live=g.messageUntil>nowMs()?g.message:
+    ready?(exposure>=.90?"いま！ PERFECT CHANCE！":"SPACEで叩け！"):
+    target<0?"左に出てくる → A":"右に出てくる → D";
+  text(live,495,112,8,C.paper,"center",950);
+
+  // Giant readable side cue, no meters or hidden physics.
+  text(target<0?"← LEFT":"RIGHT →",495,165,8,exposure>=.60?C.accent:C.muted,"center",900);
+  rect(320,775,350,12,C.soft);
+  rect(320,775,350*exposure,12,exposure>=.90?C.accent:exposure>=.60?C.cool:C.muted);
+  text("出っ張り",300,786,4.5,C.muted,"right",850);
+
+  if(g.combo>=3||g.rush>0)text("SMASH RUSH!",495,832,11,C.accent,"center",980);
+  text(`抜いた ${g.removed}/6　COMBO ×${g.combo}　ミス ${g.misses}/3`,495,872,5.5,C.cool,"center",900);
+}
+
 function drawArcade15(){
   if(bonusGame.stage!=="AR15")return;
   const id=ARCADE15.active,g=ARCADE15.g;
@@ -7337,7 +9042,16 @@ function drawArcade15(){
   else if(id==="WAVE")drawWave(g);
   else if(id==="CIRCUIT")drawCircuit(g);
   else if(id==="MEMORY")drawMemory(g);
-  else if(id==="DREAM")drawDream(g);
+  else if(id==="TEMPEST")drawTempest(g);
+  else if(id==="LANDER")drawLander(g);
+  else if(id==="JOUST")drawJoust(g);
+  else if(id==="BUBBLE")drawBubble(g);
+  else if(id==="DROP")drawDrop(g);
+  else if(id==="MOLE")drawMole(g);
+  else if(id==="HOMERUN")drawHomerun(g);
+  else if(id==="GOLDFISH")drawGoldfish(g);
+  else if(id==="CRANE")drawCrane(g);
+  else if(id==="DARUMA")drawDaruma(g);
 }
 
 function enterBonus(now){
@@ -7363,6 +9077,7 @@ function enterBonus(now){
 
 function leaveBonus(now,success){
   if(bonusGame.returnAt)return;
+  if(!success)snapshotCurrentStageProgress("C GATE RETURN");
   bonusGame.success=!!success;bonusGame.failed=!success;
   bonusGame.returnAt=now+1100;
 
@@ -7578,10 +9293,11 @@ function drawUpper(){
        495,176,6,C.cool,"center",850);
   text(`FIELD ${TW_BACKDROPS[song.twBackdrop].name}   ·   SHADOW ${song.twShadowPlay.filter(Boolean).length}/16   ·   RESONANCE ${Math.round(song.twPleasureCharge*100)}%`,
        495,114,6,C.muted,"center",700);
+  text(`HARMONY ${song.harmonyChapter+1}/${HARMONY_PROGRESSIONS.length} · ${SCORE_HARMONY_NAMES[song.harmonyChapter]}`,495,102,5,C.accent,"center",820);
   text(`RANK ${RESONANCE_RANKS[song.resonanceRank].name}  ·  HIT CHAIN ${song.hitChain}  ·  ARCHIVE ${song.archiveDepth}  ·  WORLD ${song.worldMasteryTier.join("/")}`,
        495,128,5,C.cool,"center",760);
-  text(`DRUM ${song.drumBuildActive}/6 · PHRASE ${song.featurePhraseUnlocked?"ON":"—"} · ACID ${song.acidDriveUnlocked?"ON":"—"} · KINGDOM ${song.kingdomUnlocked?"ON":"—"} · SAVE ${miniSave.stage}`,
-       495,142,5,(song.drumBuildActive>=6&&song.featurePhraseUnlocked)?C.accent:C.muted,"center",780);
+  text(`ARRANGEMENT ${miniMusicCount()}/10 · ${miniSave.lastMusicRole||"AMBIENT ONLY"} · SAVE ${miniSave.stage}`,
+       495,142,5,miniMusicCount()>0?C.accent:C.muted,"center",820);
 
   for(let i=0;i<needFlow;i++){
     const done=i<state.upperLoopStreak;
@@ -7600,14 +9316,13 @@ function drawUpper(){
     line(q.x,242,q.x,268,hot?(i===1?C.accent:C.cool):C.line,hot?3:1);
   });
 
-  // Mirror guides make the shot geometry readable from the flippers.
-  const flowW=1.5+state.flowPulse*3.2;
-  const flowC=state.flowPulse>.12?C.cool:C.paper;
-  line(225,300,270,235,flowC,flowW);line(270,235,325,165,flowC,flowW);
-  line(765,300,720,235,flowC,flowW);line(720,235,665,165,flowC,flowW);
-  const centerC=state.upperLockLit?C.accent:C.paper;
-  const centerW=state.upperLockLit?3.8:1.2;
-  line(425,270,455,165,centerC,centerW);line(565,270,535,165,centerC,centerW);
+  // Wide, non-colliding corridor hints. The physical field stays open.
+  const flowW=1.2+state.flowPulse*2.0;
+  const flowC=state.flowPulse>.12?C.cool:C.line;
+  line(285,205,325,165,flowC,flowW);line(705,205,665,165,flowC,flowW);
+  const centerC=state.upperLockLit?C.accent:C.line;
+  line(465,205,455,165,centerC,state.upperLockLit?2.4:1.0);
+  line(525,205,535,165,centerC,state.upperLockLit?2.4:1.0);
 
   upperBumpers.forEach(drawBumper);
   upperBumpers.forEach((o,i)=>{
@@ -7629,7 +9344,7 @@ function drawUpper(){
   line(730,74,730,128,C.cool,2.2);
   line(700,128,760,128,C.paper,1.4);
   text("↓ START",730,148,6,C.cool,"center",900);
-  line(205,565,270,700,C.paper,1.4);
+  line(205,600,270,700,C.paper,1.1);
 
   if(state.upperHoldUntil){
     circle(495,170,30,C.accent,C.paper,1.2);
@@ -7662,11 +9377,11 @@ function drawBonus(){
     return;
   }
   if(bonusGame.stage==="RACE"){
-    drawRaceBonus();
+    drawRaceBonus();drawStoryGoalHUD();
     return;
   }
   if(bonusGame.stage==="KINGDOM"){
-    drawKingdomBonus();
+    drawKingdomBonus();drawStoryGoalHUD();
     return;
   }
 
@@ -7713,7 +9428,7 @@ function drawBonus(){
          bonusGame.paddleX+bonusGame.paddleW/2,bonusGame.paddleY,C.paper,18);
     const b=bonusGame.ball;
     circle(b.x,b.y,b.r,C.paper);
-    circle(b.x,b.y,b.r+6,null,C.cool,.8);
+    drawStoryGoalHUD();
   }
 
   if(bonusGame.stage==="REWARD"){
@@ -8102,6 +9817,15 @@ function overlay(now){
     line(160,42,950,42,C.accent,3);
     text(`CLEAR BONUS ×2  ${Math.max(0,(state.surgeUntil-now)/1000).toFixed(1)}s`,885,64,8,C.accent,"right",900);
   }
+  if(now<song.musicGetUntil&&song.musicGetRole){
+    const a=clamp((song.musicGetUntil-now)/900,0,1);
+    ctx.save();ctx.globalAlpha=Math.min(1,.82+a*.18);
+    rect(180,70,600,118,C.bg);rect(180,70,600,118,null,C.accent,2.5);
+    text(song.musicGetTitle||"MUSIC GET",480,101,7,C.accent,"center",950);
+    text(`${song.musicGetRole} ADDED`,480,137,13,C.paper,"center",980);
+    text(song.musicGetText,480,168,5.2,C.cool,"center",860);
+    ctx.restore();
+  }
   if(now<state.eventUntil&&state.eventText){
     const a=clamp((state.eventUntil-now)/500,0,1);
     ctx.globalAlpha=Math.min(1,.55+a*.45);
@@ -8120,14 +9844,15 @@ function render(now){
   drawDataFX(now);
 
   if(state.mode===MODE.BONUS&&now<storyIntroUntil){
-    const life=clamp((storyIntroUntil-now)/1800,0,1);
+    const life=clamp((storyIntroUntil-now)/2400,0,1);
     ctx.save();
-    ctx.globalAlpha=Math.min(1,life*1.8);
-    rect(150,330,660,205,C.bg);
-    rect(150,330,660,205,null,C.accent,2);
-    text(storyIntroLabel,480,405,12,C.paper,"center",950);
-    text(storyIntroSub,480,452,5.5,C.cool,"center",850);
-    text("A / D + SPACE",480,495,4.5,C.muted,"center",800);
+    ctx.globalAlpha=Math.min(1,life*2.2);
+    rect(105,300,750,260,C.bg);
+    rect(105,300,750,260,null,C.accent,3);
+    text(storyIntroLabel,480,380,15,C.paper,"center",980);
+    text(storyIntroSub,480,438,7,C.cool,"center",900);
+    text(storyIntroMusic,480,492,7,C.accent,"center",930);
+    text("クリアすると、この音が本編の曲に永久追加",480,530,4.5,C.muted,"center",820);
     ctx.restore();
   }
 
@@ -8153,7 +9878,8 @@ function titleHasSave(){
       !!s.kingdomCleared ||
       (s.bonusTier|0)>0 ||
       (s.storyStage|0)>0 ||
-      (s.fatherPoints|0)>0
+      (s.fatherPoints|0)>0 ||
+      (s.arcadeCheckpoints&&Object.keys(s.arcadeCheckpoints).length>0)
     );
   }catch(_){return false}
 }
@@ -8166,11 +9892,12 @@ function renderSaveInfo(){
   const stage=clamp(miniSave.storyStage|0,0,STORY_STAGES.length);
 
   if(!titleHasSave()){
-    el.innerHTML=`SAVE — EMPTY<br>STAGE 1 / 7 · LETTER 0 / 500,000 P`;
+    el.innerHTML=`SAVE — EMPTY<br>STAGE 1 / ${STORY_STAGES.length} · LETTER 0 / 500,000 P`;
     return;
   }
-  const stageText=stage>=7?"ALL STAGES CLEAR":`STAGE ${stage+1} / 7`;
-  el.innerHTML=`${stageText}<br>父からの手紙 — ${pts.toLocaleString()} / 500,000 P`;
+  const stageText=stage>=STORY_STAGES.length?"ALL STAGES CLEAR":`STAGE ${stage+1} / ${STORY_STAGES.length}`;
+  const last=miniSave.lastStageId||currentStoryDef()?.id||"BREAKOUT";
+  el.innerHTML=`${stageText} · AUTO SAVE ON<br>${last} · 父からの手紙 ${pts.toLocaleString()} / 500,000 P`;
 }
 
 function menuRender(){
@@ -8246,7 +9973,8 @@ async function startGame(option=titleOptions[menu]){
   }
 
   const continuing=option==="CONTINUE" && titleHasSave();
-  const hard=option==="NEW_B";
+  if(continuing)loadMiniSave();
+  const hard=continuing ? miniSave.gameMode==="B" : option==="NEW_B";
 
   if(option==="CONTINUE"&&!continuing){
     option="NEW_A";
@@ -8304,6 +10032,13 @@ function key(e,down){
   }
   if(state.mode===MODE.OVER){if(down&&!e.repeat&&e.code==="Space"){state.mode=MODE.TITLE;$("#title").classList.remove("hidden")}return}
   if(state.mode===MODE.BONUS){
+    // STATIC BLOCK gets standard modern Tetris-style keyboard controls.
+    if(ARCADE15.active==="STATIC"){
+      if(["arrowdown","s"].includes(k)){staticSoftDropDown=down;e.preventDefault();return}
+      if(down&&!e.repeat&&["arrowup","x"].includes(k)){staticRotateCWPressed=true;e.preventDefault();return}
+      if(down&&!e.repeat&&k==="z"){staticRotateCCWPressed=true;e.preventDefault();return}
+      if(down&&!e.repeat&&(k==="c"||e.key==="Shift")){staticHoldPressed=true;e.preventDefault();return}
+    }
     if(["a","arrowleft"].includes(k)){
       if(down&&!e.repeat&&!leftDown)arcadeLeftPressed=true;
       leftDown=down;e.preventDefault()
@@ -8315,6 +10050,7 @@ function key(e,down){
 
     if(e.code==="Space"){
       e.preventDefault();
+      arcadeActionDown=down;
       if(down&&!e.repeat)arcadeActionPressed=true;
       if(bonusGame.stage==="KINGDOM"){
         if(down&&!e.repeat){bonusJumpDown=true;bonusJumpPressed=true}
@@ -8344,13 +10080,56 @@ addEventListener("blur",()=>{
   leftDown=rightDown=false;
   bonusJumpDown=false;
   bonusJumpPressed=false;
+  arcadeActionDown=false;
+  staticSoftDropDown=false;
+  staticRotateCWPressed=staticRotateCCWPressed=staticHoldPressed=false;
   if(plunger.charging)releaseCharge();
 });
 $("#mContinue").addEventListener("click",e=>{e.stopPropagation();if(titleHasSave()){menu=0;menuRender();startGame("CONTINUE")}});
 $("#mNewA").addEventListener("click",e=>{e.stopPropagation();menu=1;menuRender();startGame("NEW_A")});
 $("#mNewB").addEventListener("click",e=>{e.stopPropagation();menu=2;menuRender();startGame("NEW_B")});
 $("#mLetter").addEventListener("click",e=>{e.stopPropagation();loadMiniSave();if((miniSave.fatherPoints|0)>=500000){menu=3;menuRender();openFatherLetter()}});
-$("#title").addEventListener("click",e=>{if(e.target.closest("#titleMenu"))return;startGame(titleOptions[menu])});
+
+function exportMiniSaveBackup(){
+  loadMiniSave();
+  const payload={
+    format:"PINBALL_SYNTH_SAVE",
+    formatVersion:1,
+    exportedAt:new Date().toISOString(),
+    save:miniSave
+  };
+  const blob=new Blob([JSON.stringify(payload,null,2)],{type:"application/json"});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");
+  a.href=url;a.download="pinball-synth-save.json";
+  document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+  eventFlash("SAVE BACKUP EXPORTED",nowMs(),900,.72);
+}
+async function importMiniSaveBackup(file){
+  if(!file)return false;
+  try{
+    const txt=await file.text();
+    const data=JSON.parse(txt);
+    const incoming=data?.format==="PINBALL_SYNTH_SAVE"?data.save:data;
+    if(!incoming||typeof incoming!=="object")throw new Error("INVALID SAVE");
+    miniSave=Object.assign(defaultMiniSave(),incoming);
+    if(!miniSave.stagePerfects||typeof miniSave.stagePerfects!=="object")miniSave.stagePerfects={};
+    if(!miniSave.arcadeCheckpoints||typeof miniSave.arcadeCheckpoints!=="object")miniSave.arcadeCheckpoints={};
+    if(!miniSave.raceResume||typeof miniSave.raceResume!=="object")miniSave.raceResume={distanceM:0,checkpoints:0,combo:0,nearMisses:0,crashes:0};
+    writeMiniSave("IMPORT");
+    menu=0;menuRender();
+    return true;
+  }catch(err){
+    console.error("SAVE IMPORT",err);
+    const el=$("#saveInfo");if(el)el.innerHTML="SAVE IMPORT FAILED<br>JSONを確認してください";
+    return false;
+  }
+}
+$("#saveBackup").addEventListener("click",e=>{e.stopPropagation();exportMiniSaveBackup()});
+$("#loadBackup").addEventListener("click",e=>{e.stopPropagation();$("#saveFileInput").click()});
+$("#saveFileInput").addEventListener("change",async e=>{e.stopPropagation();const f=e.target.files?.[0];await importMiniSaveBackup(f);e.target.value=""});
+$("#title").addEventListener("click",e=>{if(e.target.closest("#titleMenu")||e.target.closest("#saveTools"))return;startGame(titleOptions[menu])});
 menuRender();
 function bind(id,on,off){
   const el=$(id);
@@ -8393,6 +10172,7 @@ bind("#tr",()=>{
 bind("#tp",
   ()=>{
     if(state.mode===MODE.BONUS){
+      arcadeActionDown=true;
       arcadeActionPressed=true;
       if(bonusGame.stage==="KINGDOM"){
         bonusJumpDown=true;
@@ -8402,6 +10182,7 @@ bind("#tp",
   },
   ()=>{
     if(state.mode===MODE.BONUS){
+      arcadeActionDown=false;
       if(bonusGame.stage==="KINGDOM")bonusJumpDown=false;
     }else releaseCharge();
   }
@@ -8450,7 +10231,7 @@ function resetForTest(gameType="A"){
   state.cards=[0,0,0,0,0];state.harmonyReady=false;state.harmonyCompletions=0;state.noteLaneInside=[false,false,false,false,false];
   state.clockLit=[0,0,0,0,0,0,0,0];state.clockIndex=0;state.clockCompletions=0;state.inlaneCooldown=[0,0];state.inlaneInside=[false,false];state.lastInlane=-1;
   state.upperHits=[0,0,0];state.upperSeq=[0,0,0];state.upperLockLit=false;state.upperLockCount=0;state.upperHoldUntil=0;state.upperShotCooldown=[0,0,0];state.upperHeat=0;state.upperReturnAfterHold=false;state.upperEntries=0;state.upperExits=0;
-  state.upperLoopStreak=0;state.upperLoopUntil=0;state.upperBestLoop=0;state.upperCenterSide=0;state.upperLastLoopSide="";state.flowPulse=0;state.upperReleaseUntil=0;state.upperEntryAt=0;state.upperMaxDwell=0;state.upperTimeouts=0;
+  state.upperLoopStreak=0;state.upperLoopUntil=0;state.upperBestLoop=0;state.upperCenterSide=0;state.upperLastLoopSide="";state.flowPulse=0;state.upperReleaseUntil=0;state.upperEntryAt=0;state.upperMaxDwell=0;state.upperTimeouts=0;state.upperGateCooldownUntil=0;
   state.releaseCycle=0;state.totalReleases=0;state.surgeUntil=0;state.surgeCount=0;state.setsCleared=0;state.cycleResetAt=0;state.objectiveLevel=0;
   state.bonusEntries=0;state.bonusWins=0;state.bonusCooldownUntil=0;
   resetSong();
@@ -8772,11 +10553,13 @@ function runQualitySuite(runsPerPolicy=20,maxSeconds=120){
 }
 
 window.__PINBALL_TEST__={
-  state,ball,plunger,FL,SCREEN,PHASE,MODE,song,bonusGame,audioStats,upperBumpers,
+  state,ball,plunger,FL,SCREEN,PHASE,MODE,song,bonusGame,audioStats,upperBumpers,upperBumperCandidate,resolveUpperCircleExact,updateBallRoute,startBallRoute,
   resetBall,beginCharge,releaseCharge,updatePhysics,updateBonus,enterBonus,leaveBonus,finishBonusReturn,
   STORY_STAGES,currentStoryDef,storyAllClear,storyStartCurrent,storyAdvance,arcadeFinish,
-  staticInit,staticUpdate,mazeInit,mazeUpdate,mazeOpenDirs,mazeChooseDir,memoryInit,memoryUpdate,dreamInit,dreamUpdate,
-  upperCircleContact,resolveUpperCircleExact,sweptCircleTOI,upperBumperCandidate,
+  staticInit,staticUpdate,mazeInit,mazeUpdate,mazeOpenDirs,mazeChooseDir,mazeRefreshChoices,mazeBuildDashPath,mazeBeginDash,memoryInit,memoryUpdate,storyGoalStatus,
+  darumaInit,darumaUpdate,darumaStrike,drawDaruma,darumaOffset,darumaExposure,darumaTargetSide,
+  setArcadeTestInput:(left,right,action)=>{arcadeLeftPressed=!!left;arcadeRightPressed=!!right;arcadeActionPressed=!!action},
+  upperCircleContact,resolveUpperCircleExact,sweptCircleTOI,upperBumperCandidate,physicalUpperGateReturn,
   openFatherLetter,closeFatherLetter,
   FATHER_UNLOCK_POINTS,fatherEnding,beginFatherEnding,updateFatherEnding,fatherEndingProgress,
   setKeys:(l,r)=>{leftDown=l;rightDown=r},
@@ -8785,6 +10568,7 @@ window.__PINBALL_TEST__={
   upperTopShots,
   scoreEmotion,scoreEmotionTier,snapSemiToChord,harmonyForTime,consonantChordTones,pcDist,portraitLayoutMetrics,
   currentChord,snapshotChord,setHarmonyIndex,harmonyIndexForWhen,harmonySnapshotForWhen,harmonyAudit,
+  SCORE_HARMONY_THRESHOLDS,SCORE_HARMONY_NAMES,HARMONY_PROGRESSIONS,harmonyChapterForScore,progressionForChapter,commitHarmonyChapter,maybeAdvanceHarmonyChapter,
   triggerEmotionTier,registerUpperFxHit,playCoreMotif,playCoreLead,
   playMemoryFragment,playMemoryReturn,rememberMemory,forgetMemory,returnMemory,
   startEpilogue,updateEpilogue,
@@ -8921,6 +10705,7 @@ VISUALS: removed scan curtains, rotating tunnel and edge-strobe spectacle layers
 UPPER HIT DETECTION: bumper hit radius +9/+11 px, predictive attraction, swept shot-mouth crossing, wider CENTER/orbit mouths, single-owner collision response per physics substep.
 MOBILE: dynamic viewport, safe-area, portrait/landscape layouts, visible coarse-pointer controls, multi-touch pointer tracking, orientation/visualViewport resize handling.
 -->
+<!-- v18.3: HARD DROP + UNIVERSAL CLEAR CONDITIONS + CLEAN BALL VISUALS -->
 </body>
 </html>
 <!-- V53 MASTER RULE:
@@ -10212,8 +11997,6 @@ REFERENCE MAP
   remarkablegames/water-pipe — MIT
 14 MEMORY CHOIR
   Selharem/Memoy-Card-Game — MIT
-15 DREAM TERMINAL
-  glebis/generative-sequencer + madmonk13/modal-16 — MIT
 
 REWARD DESIGN
 Every game uses the shared JUICE ENGINE:
@@ -10228,14 +12011,17 @@ FINAL STAGE ORDER
 1 BREAKOUT / BUILD
 2 ACID DRIVE / PERFORM
 3 PULSE KINGDOM / REMEMBER
-4 AMBIENT LABYRINTH / LISTEN
-5 STATIC BLOCK / THINK
-6 MEMORY CHOIR / REMEMBER HIM
-7 DREAM TERMINAL / REBUILD
+4 ORBIT SHOOTER / ATTACK
+5 STATIC BLOCK / STACK
+6 ECHO CLIMBER / ASCEND
+7 TEMPEST RING / SURGE
+8 LUNAR LANDER / TOUCH
+9 FEEDBACK JOUST / FLOAT
+10 PUZZLE ORBIT / RESOLVE
 
 ARCADE 15 SELECTION UI IS NO LONGER REACHABLE.
 C GATE ALWAYS STARTS THE NEXT STORY STAGE.
-AFTER ALL 7 STAGES, C GATE RUNS FIXED-ORDER ENCORE CHALLENGES.
+AFTER ALL 10 STAGES, C GATE RUNS FIXED-ORDER ENCORE CHALLENGES.
 
 FATHER'S LETTER
 - visible from title from first boot
@@ -10284,11 +12070,6 @@ MEMORY CHOIR
 - 4 -> 6 sound pairs
 - RAIN / TRAIN / TV / ROOM / KEY / STEP identities
 - memory combo / best-combo reward
-
-DREAM TERMINAL
-- WARM / LONELY / ECSTATIC / FLOATING / DARK / HOME
-- every selection audibly changes current world immediately
-- three choices commit final macro-world
 
 SOUND
 - shared JUICE ENGINE retained
@@ -10373,4 +12154,234 @@ V17.5 PORTRAIT MOBILE PASS
 - portraitLayoutMetrics exported for automated viewport testing.
 -->
 
-<!-- v17.6: exact upper bumper CCD, no ball trail/aura, safe maze traversal, calmer physics, thicker low-mid mix. -->
+<!-- v17.8: exact upper bumper CCD, no ball trail/aura, safe maze traversal, calmer physics, thicker low-mid mix. -->
+
+<!--
+V17.7 REBOUND + SCORE HARMONY EVOLUTION
+- DIVE / DRIFT / ASCEND are explicit true pop bumpers.
+- Visible rim equals collision rim; continuous TOI prevents tunneling.
+- Every valid contact exits with a positive outward normal velocity.
+- Kick strength: DIVE 330 / DRIFT 330 / ASCEND 365, capped for stable physics.
+- Score harmony chapters commit only on 4-bar boundaries:
+  0 HOME
+  30,000 OPEN SKY
+  120,000 DISTANCE
+  280,000 NIGHT MEMORY
+  420,000 RETURN
+- Each chapter changes the actual chord progression, not merely filter/EQ.
+- Later chapters add sparse counterline / low voicing / air shimmer while master transport remains authoritative.
+-->
+
+<!--
+V17.8 SOLID POP BUMPER FIX
+- Upper DIVE/DRIFT/ASCEND collision is permanent and never disabled by reward cooldown.
+- Reward cooldown now debounces only audio/score/juice.
+- A bumper-owned physics substep skips rails/posts/guides, preventing double-reflection.
+- Rebound kick increased to 420/420/455 with restitution .96/.96/.97.
+- Removed nonphysical outer aim halo, so visible rim equals collision rim.
+-->
+
+<!--
+V17.9 FREE UPPER PHYSICS
+ROOT CAUSE FIXED:
+- v17.8 upper route branch returned before updateUpperGeometry.
+- ENTRY / ENTRY-GATE / ORBIT / CENTER constrained motion could therefore ghost through all 3 circles.
+- Route steps now maintain prevX/prevY, run swept collision, cancel route on impact, then resolve physical rebound.
+- Successful solve has a defensive outward-radial-velocity postcondition.
+-->
+
+<!--
+V18.0 FREE UPPER PHYSICS
+- Removed all ORBIT / CENTER Bezier routes from upper gameplay.
+- Removed ENTRY / ENTRY-GATE scripted routes; A starts as a free ball at the top.
+- DIVE / DRIFT / ASCEND are always pure solid pop bumpers.
+- ASCEND can no longer freeze or collect CENTER.
+- ORBIT / CENTER sensors moved to the actual top-rail openings (y≈158), away from the bumpers.
+- Crossing a top gate physically reverses vertical motion and preserves horizontal momentum.
+- CENTER progression no longer stops or teleports the ball.
+- Added upper anti-stall watchdog for low-energy pockets.
+-->
+
+<!-- v18.1: LABYRINTH = junction select/dash, no auto-run deadlock. UPPER = open shot corridors, 3 pop bumpers moved between lanes, center post removed, hidden guide collisions removed. -->
+
+<!--
+V18.5 / C GATE RESUME FIX
+- Failure return now snapshots the currently active story stage before leaving BONUS.
+- Re-entering C gate restores saved state instead of invoking an implicit clean start.
+- BREAKOUT restores exact destroyed-block mask.
+- ACID DRIVE restores exact distance/checkpoint progress.
+- PULSE KINGDOM restores saved checkpoint.
+- ORBIT SHOOTER restores wave + enemy alive/HP state.
+- STATIC BLOCK restores line count + board.
+- ECHO CLIMBER restores exact height/checkpoint.
+- Generic timeout path uses the same snapshot path.
+-->
+
+<!--
+V19.0 / 100-CONCEPT CLASSIC-MECHANIC PASS
+DESIGN FILTER
+- 100 minigame archetypes rated on immediacy, mastery, 3-button fit, distinctness,
+  music causality, and historical durability.
+- Five finalists: Tempest, Lunar Lander, Joust, Puzzle Bobble, Snake.
+- Implemented top four because removing DREAM (-1) + adding four (+4) yields the
+  requested net increase of roughly three story minigames: 7 -> 10.
+- Snake remains reserve to avoid overstuffing the campaign.
+
+DREAM TERMINAL
+- Removed from story order.
+- Removed from init/update/draw/save/reward routes.
+- No abstract "choose a feeling" clear condition remains.
+
+NEW STORY GAMES
+7 TEMPEST RING  : A/D orbit, SPACE fire. Clear 3 tubes.
+8 LUNAR LANDER  : A/D tilt, hold SPACE thrust. Make 3 soft landings.
+9 FEEDBACK JOUST: A/D drift, SPACE flap. Win height-based collisions.
+10 PUZZLE ORBIT : A/D aim, SPACE shoot. Match 3 and trigger cascades.
+
+C-GATE RESUME
+- All four new stages write checkpoint state and resume after failure/timeout.
+-->
+
+<!--
+V20 / JAPAN-FAMILIAR MINIGAME REBUILD
+
+WHY:
+The previous post-Kingdom games asked the player to understand abstract systems
+before they could enjoy them. This pass reverses the priority.
+
+RULE:
+- One Japanese imperative tells the whole game.
+- One visible goal.
+- A/D + SPACE only.
+- Difficulty comes from speed/combo, never from hidden rules.
+- Failure keeps progress and returns through the C gate.
+
+STORY AFTER KINGDOM:
+4 UFOシューティング : 敵をぜんぶ撃て！
+5 カラー落ちもの   : 同じ色を4つつなげろ！
+6 もぐらたたき     : 出たモグラを15匹叩け！
+7 ホームラン競争    : 5本ホームラン！
+8 金魚すくい        : 金魚を8匹すくえ！
+9 クレーンゲーム    : 景品を3つ取れ！
+10 だるま落とし          : 20回跳べ！
+
+The V19 abstract routes remain removed. V21 also replaces Air Hockey with Home Run Derby.
+-->
+
+<!--
+V21 / MUSIC ROLE SYSTEM + GAME FIX
+
+BUG FIXES
+- Goldfish scoop was mathematically unreachable in V20 because fish occupied roughly y=260..500
+  while the poi collision point was fixed at y=650 with an 88px radius.
+- V21 animates the poi through the fish field and catches on visible overlap.
+- Air Hockey removed from story. Replaced with familiar batting-center style HOME RUN DERBY.
+- Shooter timeout checkpoint schema corrected to match the simplified shooter.
+
+MUSIC ROLE SYSTEM
+Every story minigame owns one permanent arrangement layer:
+1 BREAKOUT  -> DRUM GROOVE
+2 DRIVE     -> ACID ARP
+3 KINGDOM   -> 8-BIT COUNTER
+4 SHOOTER   -> LEAD MELODY
+5 DROP      -> CHORD PAD
+6 MOLE      -> PERCUSSION
+7 HOMERUN   -> BASSLINE
+8 GOLDFISH  -> SHIMMER
+9 CRANE     -> HOOK MELODY
+10 DARUMA   -> BREAK FILLS (打撃の成功がその場でフィルを組み立て、クリア後は曲の節目に永久追加)
+
+CLEAR FEEDBACK
+- role is permanently added to musicMask / save
+- first 8 bars are deliberately foregrounded
+- main game displays MUSIC GET / <ROLE> ADDED
+- intro tells the player exactly what musical layer the minigame unlocks
+-->
+
+<!--
+V22 / だるま落とし FULL REBUILD
+
+OLD:
+- stand still
+- press SPACE near a rope-cross event
+- 20 repetitions
+This was effectively a one-button reaction test.
+
+NEW:
+- Japanese schoolyard "だるま落とし" structure
+- RUN IN -> JUMP -> EXIT -> approach from the opposite side
+- A/D controls meaningful movement; SPACE is only the jump
+- 12 completed loops, not 20 static jumps
+- rope speed increases every 4 loops
+- PERFECT / GOOD timing creates mastery without adding rules
+- 3 misses returns to C gate, keeping completed loops
+- old `jumps` checkpoint migrates into `laps`
+
+MUSIC:
+- each successful jump previews OPEN-HAT GROOVE inside the minigame
+- every completed loop adds a groove accent
+- every 4 loops raises GROOVE LEVEL and adds clap/noise punctuation
+- clear still permanently unlocks the final OPEN-HAT GROOVE in the main song
+-->
+
+<!--
+V23 / FINAL MINIGAME REPLACED: DARUMA OTOSHI
+
+WHY ROPE WAS REMOVED
+- Even after the V22 figure-eight rebuild, the core reward was still "wait for rope, press jump".
+- It did not deserve to be the final minigame in a music-building campaign.
+
+DARUMA OTOSHI
+- familiar Japanese physical toy/game
+- one-line rule: knock out all six blocks without dropping the daruma
+- A / D chooses the striking side
+- hold SPACE to charge, release to strike
+- visible power sweet spot
+- remaining tower has spring/wobble physics
+- hit from the useful side to counter a leaning tower
+- weak strike: block stays
+- good/perfect strike: block flies out
+- overpowered/off-center strike: tower receives dangerous angular impulse
+- three falls -> return to C gate
+- removed blocks remain saved on retry
+
+MUSIC ROLE
+- final role changed from OPEN-HAT GROOVE to BREAK FILLS
+- each successful block immediately previews impact/clap/percussion layers
+- later hits add noise/transient complexity
+- after clear, main song gets permanent end-of-phrase drum fills
+- first 8 debut bars exaggerate the fills so the player unmistakably hears the new arrangement layer
+-->
+
+<!--
+V24 / DARUMA SMASH RUSH
+
+V23 PROBLEMS REMOVED
+- no SPACE hold/release state machine
+- no charge power meter
+- no spring/wobble simulation
+- no negative-direction stability bar
+- no side-correction hidden math
+
+NEW CORE
+- the active bottom block visibly slides left/right
+- A / D selects the matching hammer side
+- SPACE strikes instantly
+- hit when protrusion >= 60%; PERFECT at >= 90%
+- successful block flies across the screen and the whole daruma drops one tier
+- three good hits establish SMASH RUSH presentation
+- difficulty comes only from slide speed increasing with each removed block
+- three misses return to C gate; cleared blocks are saved
+
+MUSIC
+- each success immediately plays sub + clap + percussion
+- PERFECT adds noise/transient accent
+- the permanent clear reward remains BREAK FILLS in the main track
+
+RELIABILITY
+- update clamps dt to 0..50ms
+- flying objects are finite-checked before retention
+- no hold-state dependency
+- V23 DARUMA checkpoint is intentionally discarded on migration
+- daruma init/update/strike/draw are exposed in __PINBALL_TEST__ for runtime smoke tests
+-->
