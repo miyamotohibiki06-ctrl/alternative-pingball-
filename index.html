@@ -568,7 +568,7 @@ const MINI_SAVE_KEY="pinballSynthMiniGameV8";
 
 function defaultMiniSave(){
   return {
-    version:18,
+    version:19,
     stage:"BREAKOUT",
     gameMode:"A",
     brokenMask:0,
@@ -618,7 +618,7 @@ function loadMiniSave(){
     // V25: the removed legacy ending system was removed entirely.
     delete miniSave.legacyPointsRemoved;
     delete miniSave.legacyReadRemoved;
-    miniSave.version=18;
+    miniSave.version=19;
   }catch(_){
     miniSave=defaultMiniSave();
   }
@@ -6104,8 +6104,8 @@ function updateRace(dt,now){
   dt=clamp(dt,0,1/20);
   const dir=(rightDown?1:0)-(leftDown?1:0);
 
-  const desired=dir*560;
-  r.carV=lerp(r.carV,desired,clamp(dt*12,0,1));
+  // Arcade steering: input should move the car on the very next simulation tick.
+  r.carV=dir*(now<r.nearBoostUntil?690:640);
 
   if(dir!==0){
     // Immediate control intent + actual velocity.
@@ -6331,15 +6331,15 @@ function updateKingdom(dt,now){
   if(!k.started)return;
 
   const dir=(rightDown?1:0)-(leftDown?1:0);
-  const accel=p.onGround?980:520,maxSpd=p.onGround?365:325;
+  const accel=p.onGround?1580:760,maxSpd=p.onGround?430:360;
 
-  // Jump buffer: a slightly early press is remembered.
-  if(bonusJumpPressed)p.jumpBuffer=.105;
+  // Modern platformer feel: input buffer and coyote time are intentionally generous.
+  if(bonusJumpPressed)p.jumpBuffer=.125;
   bonusJumpPressed=false;
   p.jumpBuffer=Math.max(0,p.jumpBuffer-dt);
 
   // Coyote time: a slightly late press after leaving an edge still jumps.
-  if(p.onGround)p.coyote=.090;
+  if(p.onGround)p.coyote=.115;
   else p.coyote=Math.max(0,p.coyote-dt);
 
   // Skid is intentionally strong when reversing direction.
@@ -6350,14 +6350,14 @@ function updateKingdom(dt,now){
     const a=reversing?accel*1.32:accel;
     p.vx+=dir*a*dt;p.facing=dir;
   }else{
-    const fr=p.onGround?900:135;
+    const fr=p.onGround?1550:170;
     if(Math.abs(p.vx)<=fr*dt)p.vx=0;else p.vx-=Math.sign(p.vx)*fr*dt;
   }
   p.vx=clamp(p.vx,-maxSpd,maxSpd);
 
   if(p.jumpBuffer>0&&p.coyote>0){
     const speedLift=clamp(Math.abs(p.vx)/maxSpd,0,1);
-    p.vy=-(500+76*speedLift);
+    p.vy=-(545+82*speedLift);
     p.onGround=false;p.coyote=0;p.jumpBuffer=0;p.jumpCut=false;p.state="JUMP";
     kingdomEvent("JUMP",p.x,now);
     juiceReward("micro",p.x-k.camX,p.y,.30,"");
@@ -6508,12 +6508,12 @@ const STORY_STAGES=[
   {id:"DRIVE",name:"ドライブ",role:"2000m走りきれ！",instruction:"2000m走りきれ！",controls:"A / D でハンドル",music:"ACID ARP",musicText:"16分音符のACID ARPが走り続ける",fragment:"前の家の道路"},
   {id:"KINGDOM",name:"ジャンプアクション",role:"ゴールまで行け！",instruction:"ゴールまで行け！",controls:"A / D で移動　SPACEでジャンプ",music:"8-BIT COUNTER",musicText:"8bitの対旋律が曲の上を跳ねる",fragment:"壊れたキーボード"},
   {id:"SHOOTER",name:"UFOシューティング",role:"敵をぜんぶ撃て！",instruction:"敵をぜんぶ撃て！",controls:"A / D で移動　SPACEで発射",music:"LEAD MELODY",musicText:"前面にリードメロディが追加される",fragment:"雨、電車、テレビ"},
-  {id:"DROP",name:"カラー落ちもの",role:"同じ色を4つつなげろ！",instruction:"同じ色を4つつなげろ！",controls:"A / D で移動　SPACEで回転",music:"CHORD PAD",musicText:"厚いコードパッドが曲を包む",fragment:"色のかたまり"},
-  {id:"MOLE",name:"もぐらたたき",role:"出たモグラを叩け！",instruction:"出たモグラを15匹叩け！",controls:"A / D で選ぶ　SPACEで叩く",music:"PERCUSSION",musicText:"細かなパーカッションがグルーヴを増やす",fragment:"ポコポコした音"},
+  {id:"DROP",name:"カラー落ちもの",role:"同じ色を4つつなげろ！",instruction:"同じ色を4つつなげろ！",controls:"A / D 移動　SPACE 回転・長押し高速落下",music:"CHORD PAD",musicText:"厚いコードパッドが曲を包む",fragment:"色のかたまり"},
+  {id:"MOLE",name:"もぐらたたき",role:"出たモグラを叩け！",instruction:"左・中央・右、出た場所をそのまま叩け！",controls:"A=左　SPACE=中央　D=右",music:"PERCUSSION",musicText:"反応速度が細かなパーカッションの密度になる",fragment:"ポコポコした音"},
   {id:"HOMERUN",name:"ホームラン競争",role:"5本ホームラン！",instruction:"タイミングを合わせて5本打て！",controls:"A / D でバッター移動　SPACEでスイング",music:"BASSLINE",musicText:"太いベースラインが曲の芯を作る",fragment:"バッティングセンターの打球音"},
   {id:"GOLDFISH",name:"金魚すくい",role:"金魚をすくえ！",instruction:"金魚を8匹すくえ！",controls:"A / D でポイ移動　SPACEですくう",music:"SHIMMER",musicText:"水面のような高音SHIMMERが広がる",fragment:"夏祭りの水面"},
   {id:"CRANE",name:"クレーンゲーム",role:"景品を取れ！",instruction:"景品を3つ取れ！",controls:"A / D でクレーン移動　SPACEでおろす",music:"HOOK MELODY",musicText:"覚えやすいフックメロディが追加される",fragment:"ゲームセンターの景品"},
-  {id:"DARUMA",name:"だるま落とし",role:"出っ張った側から叩け！",instruction:"出っ張った積み木を6段叩き抜け！",controls:"A / D で左・右を選ぶ　SPACEで一撃",music:"BREAK FILLS",musicText:"PERFECTの打撃感が曲の節目の爆発的なドラムフィルになる",fragment:"HOME"}
+  {id:"DARUMA",name:"だるま落とし",role:"出っ張った側を直接叩け！",instruction:"左に出たらA、右に出たらD。6段抜け！",controls:"A=左を叩く　D=右を叩く",music:"BREAK FILLS",musicText:"PERFECTの打撃感が曲の節目の爆発的なドラムフィルになる",fragment:"HOME"}
 ];
 
 let storyIntroUntil=0;
@@ -7394,76 +7394,114 @@ function fishingUpdate(g,dt,now){
   if(g.caught>=5)arcadeFinish("FISHING",now,"TEXTURE CAPTURED");
 }
 
-/* ---------- 10 UFO SHOOTING / 敵をぜんぶ撃て ---------- */
+/* ---------- V27 UFO SHOOTING / OSS SPACE-INVADERS FEEL ---------- */
 function shooterMakeEnemies(){
   const out=[];
   for(let r=0;r<4;r++)for(let c=0;c<5;c++){
-    out.push({x:325+c*85,y:180+r*58,alive:true});
+    out.push({col:c,row:r,x:325+c*85,y:175+r*58,alive:true,flash:0});
   }
   return out;
 }
 function shooterInit(){
   const cp=getArcadeCheckpoint("SHOOTER");
   const g={
-    x:495,vx:0,bullets:[],enemyBullets:[],enemies:shooterMakeEnemies(),
-    dir:1,fireCd:0,enemyFire:.72,lives:3,kills:Math.max(0,cp?.kills|0),
-    combo:0,bestCombo:Math.max(0,cp?.bestCombo|0),invulnUntil:0
+    x:495,bullets:[],enemyBullets:[],enemies:shooterMakeEnemies(),
+    dir:1,fireCd:0,enemyFire:.62,lives:3,kills:Math.max(0,cp?.kills|0),
+    combo:0,bestCombo:Math.max(0,cp?.bestCombo|0),comboT:0,
+    invulnUntil:0,formationDrop:0,shots:0,hitFlash:0
   };
-  // Resume by removing the first N enemies. Exact identity is unimportant here;
-  // progress is intentionally simple and visible.
   for(let i=0;i<Math.min(g.kills,g.enemies.length);i++)g.enemies[i].alive=false;
   return g;
 }
+function shooterBottomEnemies(g){
+  const out=[];
+  for(let c=0;c<5;c++){
+    let best=null;
+    for(const e of g.enemies)if(e.alive&&e.col===c){
+      if(!best||e.row>best.row)best=e;
+    }
+    if(best)out.push(best);
+  }
+  return out;
+}
+function shooterFire(g,now){
+  if(g.fireCd>0||g.bullets.length>=6)return;
+  g.bullets.push({x:g.x,y:714,vy:-960});
+  g.fireCd=.085;
+  g.shots++;
+  juiceReward("micro",g.x,714,.19,"");
+  if(audioReady){
+    const snap=snapshotChord();
+    chipPulse(chordTone((g.shots+g.kills)%5,4,snap),.18,now,.035,(g.x-495)/420,.72);
+  }
+}
 function shooterUpdate(g,dt,now){
   const dir=(rightDown?1:0)-(leftDown?1:0);
-  g.vx=lerp(g.vx,dir*500,clamp(dt*12,0,1));
-  g.x=clamp(g.x+g.vx*dt,245,745);
+  g.x=arcadeSnapMove(g.x,dir,650,dt,235,755);
   g.fireCd=Math.max(0,g.fireCd-dt);
+  g.comboT=Math.max(0,g.comboT-dt);
+  g.hitFlash=Math.max(0,g.hitFlash-dt);
+  if(g.comboT<=0)g.combo=0;
 
-  if(arcadeActionPressed&&g.fireCd<=0){
-    g.bullets.push({x:g.x,y:720,vy:-700});
-    g.fireCd=.13;
-    juiceReward("micro",g.x,720,.22,"");
-  }
+  // Holding the action zone autofires, matching polished browser shooters.
+  if((arcadeActionPressed||arcadeActionDown)&&g.fireCd<=0)shooterFire(g,now);
 
+  const live=g.enemies.filter(e=>e.alive);
+  const formationSpeed=70+(20-live.length)*4.2;
   let minX=999,maxX=-999;
-  for(const e of g.enemies)if(e.alive){
-    e.x+=g.dir*(52+g.kills*1.8)*dt;
+  for(const e of live){
+    e.x+=g.dir*formationSpeed*dt;
+    e.flash=Math.max(0,e.flash-dt);
     minX=Math.min(minX,e.x);maxX=Math.max(maxX,e.x);
   }
-  if(minX<270||maxX>720){
+  if(live.length&&(minX<255||maxX>735)){
     g.dir*=-1;
-    for(const e of g.enemies)if(e.alive)e.y+=14;
+    for(const e of live)e.y+=18;
+    g.formationDrop=.18;
   }
+  g.formationDrop=Math.max(0,g.formationDrop-dt);
 
   g.enemyFire-=dt;
-  if(g.enemyFire<=0){
-    const live=g.enemies.filter(e=>e.alive);
-    if(live.length){
-      const e=live[(Math.floor(now/240)+g.kills)%live.length];
-      g.enemyBullets.push({x:e.x,y:e.y+16,vy:260});
-    }
-    g.enemyFire=Math.max(.34,.78-g.kills*.018);
+  if(g.enemyFire<=0&&live.length){
+    const shooters=shooterBottomEnemies(g);
+    const e=shooters[(g.kills+Math.floor(now/190))%Math.max(1,shooters.length)];
+    if(e)g.enemyBullets.push({x:e.x,y:e.y+18,vy:315+(20-live.length)*4});
+    g.enemyFire=Math.max(.27,.66-(20-live.length)*.018);
   }
 
   for(const b of g.bullets)b.y+=b.vy*dt;
   for(const b of g.enemyBullets)b.y+=b.vy*dt;
 
-  for(const b of g.bullets)for(const e of g.enemies)if(e.alive&&Math.abs(b.x-e.x)<27&&Math.abs(b.y-e.y)<23){
-    e.alive=false;b.y=-50;g.kills++;g.combo++;g.bestCombo=Math.max(g.bestCombo,g.combo);
-    addScore(180+g.combo*18,now);
-    juiceReward(g.combo%5===0?"power":"snap",e.x,e.y,.55,g.combo%5===0?`COMBO ×${g.combo}`:"HIT");
-    setArcadeCheckpoint("SHOOTER",{kills:g.kills,bestCombo:g.bestCombo},"ENEMY SAVE");
-    if(g.kills>=20){arcadeFinish("SHOOTER",now,"20 / 20");return}
+  for(const b of g.bullets){
+    if(b.dead)continue;
+    for(const e of g.enemies){
+      if(!e.alive)continue;
+      if(Math.abs(b.x-e.x)<29&&Math.abs(b.y-e.y)<24){
+        e.alive=false;e.flash=.12;b.dead=true;
+        g.kills++;
+        g.combo=g.comboT>0?g.combo+1:1;
+        g.comboT=.82;
+        g.bestCombo=Math.max(g.bestCombo,g.combo);
+        g.hitFlash=.10;
+        addScore(210+g.combo*35,now);
+        const power=g.combo>=5?.78:.50;
+        juiceReward(g.combo>=5?"power":"snap",e.x,e.y,power,
+          g.combo>=5?`CHAIN ×${g.combo}`:"HIT");
+        arcadeHaptic(g.combo>=5?[7,18,7]:7);
+        setArcadeCheckpoint("SHOOTER",{kills:g.kills,bestCombo:g.bestCombo},"ENEMY SAVE");
+        if(g.kills>=20){arcadeFinish("SHOOTER",now,g.bestCombo>=8?"20 / 20 · PERFECT RAID":"20 / 20");return}
+        break;
+      }
+    }
   }
 
   if(now>=g.invulnUntil){
     for(const b of g.enemyBullets){
-      if(Math.abs(b.x-g.x)<28&&Math.abs(b.y-735)<22){
-        b.y=999;g.lives--;g.combo=0;g.invulnUntil=now+1100;
-        juiceImpact(g.x,735,.72,{label:`ライフ ${g.lives}`,n:16,shake:5,flash:.08});
+      if(!b.dead&&Math.abs(b.x-g.x)<30&&Math.abs(b.y-735)<22){
+        b.dead=true;g.lives--;g.combo=0;g.comboT=0;g.invulnUntil=now+900;
+        juiceImpact(g.x,735,.75,{label:`ライフ ${g.lives}`,n:18,shake:6,flash:.09});
+        arcadeHaptic([20,30,20]);
         if(g.lives<=0){
-          g.lives=3;
           setArcadeCheckpoint("SHOOTER",{kills:g.kills,bestCombo:g.bestCombo},"SHOOTER FAIL");
           leaveBonus(now,false);
           return;
@@ -7472,11 +7510,22 @@ function shooterUpdate(g,dt,now){
     }
   }
 
-  g.bullets=g.bullets.filter(b=>b.y>-30);
-  g.enemyBullets=g.enemyBullets.filter(b=>b.y<850);
+  // If invaders get too low, treat it as a hit instead of a mysterious instant loss.
+  if(live.some(e=>e.y>660)&&now>=g.invulnUntil){
+    g.lives--;g.invulnUntil=now+1000;
+    live.forEach(e=>e.y-=85);
+    juiceImpact(495,650,.76,{label:"押し込まれた！",n:16,shake:6,flash:.08});
+    if(g.lives<=0){
+      setArcadeCheckpoint("SHOOTER",{kills:g.kills,bestCombo:g.bestCombo},"SHOOTER FAIL");
+      leaveBonus(now,false);return;
+    }
+  }
+
+  g.bullets=g.bullets.filter(b=>!b.dead&&b.y>-40);
+  g.enemyBullets=g.enemyBullets.filter(b=>!b.dead&&b.y<850);
 }
 
-/* ---------- 11 ECHO CLIMBER / STORY ASCENT ---------- */
+/* ---------- 11 ECHO CLIMBER / STORY ASCENT ---------- *//* ---------- 11 ECHO CLIMBER / STORY ASCENT ---------- */
 function climberInit(){
   const cp=getArcadeCheckpoint("CLIMBER");
   const savedHeight=clamp(+cp?.height||0,0,1799);
@@ -7983,12 +8032,14 @@ function bubbleUpdate(g,dt,now){
 }
 
 
-/* ---------- V20-01 COLOR DROP / 同じ色を4つ ---------- */
-const DROP_COLORS=[0,1,2,3];
+/* ---------- V27-01 COLOR DROP / TETRIS-STYLE INPUT FEEL ---------- */
 function dropEmptyBoard(){return Array.from({length:12},()=>Array(6).fill(-1))}
 function dropNewPiece(g){
-  g.piece={x:2,y:0,rot:0,a:(g.serial*3+1)%4,b:(g.serial*5+2)%4};
+  if(!g.nextPair)g.nextPair=[arcadeBalancedColor(g),arcadeBalancedColor(g)];
+  g.piece={x:2,y:0,rot:0,a:g.nextPair[0],b:g.nextPair[1]};
+  g.nextPair=[arcadeBalancedColor(g),arcadeBalancedColor(g)];
   g.serial++;
+  g.lockT=0;g.actionHeld=0;
 }
 function dropCells(p,x=p.x,y=p.y,rot=p.rot){
   const dirs=[[0,-1],[1,0],[0,1],[-1,0]],d=dirs[rot&3];
@@ -8026,7 +8077,7 @@ function dropGravity(g){
 }
 function dropResolve(g,now){
   let chain=0,total=0,guard=0;
-  while(guard++<8){
+  while(guard++<10){
     const groups=dropGroups(g);if(!groups.length)break;
     chain++;
     for(const group of groups)for(const [r,c] of group){g.board[r][c]=-1;total++}
@@ -8034,19 +8085,19 @@ function dropResolve(g,now){
   }
   if(total){
     g.cleared+=total;g.chain=chain;g.bestChain=Math.max(g.bestChain,chain);
-    addScore(total*120+chain*500,now);
-    juiceReward(chain>=2?"power":"item",495,420,.68,chain>=2?`${chain}れんさ！`:`${total}こ消えた！`);
+    addScore(total*135+chain*620,now);
+    juiceReward(chain>=2?"power":"item",495,420,.72,
+      chain>=2?`${chain}れんさ！`:`${total}こ消えた！`);
+    arcadeHaptic(chain>=2?[8,20,8]:7);
     setArcadeCheckpoint("DROP",{cleared:g.cleared,bestChain:g.bestChain},"COLOR SAVE");
-    if(g.cleared>=20){arcadeFinish("DROP",now,"20こ消した！");return true}
+    if(g.cleared>=20){arcadeFinish("DROP",now,g.bestChain>=3?"20 / CHAIN MASTER":"20こ消した！");return true}
   }else g.chain=0;
   return false;
 }
 function dropLock(g,now){
   for(const q of dropCells(g.piece)){
     if(q.y<0){
-      // Lose only the current board; keep collected progress.
       g.board=dropEmptyBoard();dropNewPiece(g);
-      setArcadeCheckpoint("DROP",{cleared:g.cleared,bestChain:g.bestChain},"STACK RESET");
       juiceImpact(495,180,.7,{label:"つみすぎ！",n:16,shake:5,flash:.08});
       return;
     }
@@ -8055,345 +8106,418 @@ function dropLock(g,now){
   if(dropResolve(g,now))return;
   dropNewPiece(g);
 }
+function dropTryMove(g,dx){
+  if(dropValid(g,g.piece.x+dx,g.piece.y,g.piece.rot)){
+    g.piece.x+=dx;g.lockT=0;return true;
+  }
+  return false;
+}
+function dropTryRotate(g){
+  const nr=(g.piece.rot+1)&3;
+  for(const k of [0,-1,1,-2,2]){
+    if(dropValid(g,g.piece.x+k,g.piece.y,nr)){
+      g.piece.x+=k;g.piece.rot=nr;g.lockT=0;return true;
+    }
+  }
+  return false;
+}
 function dropInit(){
   const cp=getArcadeCheckpoint("DROP");
-  const g={board:dropEmptyBoard(),piece:null,fall:0,serial:1,cleared:Math.max(0,cp?.cleared|0),
-           chain:0,bestChain:Math.max(0,cp?.bestChain|0)};
+  const g={board:dropEmptyBoard(),piece:null,fall:0,serial:1,colorBag:[],nextPair:null,
+           cleared:Math.max(0,cp?.cleared|0),chain:0,bestChain:Math.max(0,cp?.bestChain|0),
+           holdDir:0,holdT:0,repeatT:0,lockT:0,actionHeld:0};
   dropNewPiece(g);return g;
 }
 function dropUpdate(g,dt,now){
-  if(arcadeLeftPressed&&dropValid(g,g.piece.x-1,g.piece.y,g.piece.rot))g.piece.x--;
-  if(arcadeRightPressed&&dropValid(g,g.piece.x+1,g.piece.y,g.piece.rot))g.piece.x++;
+  const dir=(rightDown?1:0)-(leftDown?1:0);
+
+  // Immediate move, then DAS/ARR repeat: classic polished falling-block feel.
+  if(arcadeLeftPressed)dropTryMove(g,-1);
+  if(arcadeRightPressed)dropTryMove(g,1);
+  if(dir!==g.holdDir){g.holdDir=dir;g.holdT=0;g.repeatT=0}
+  if(dir!==0){
+    g.holdT+=dt;
+    if(g.holdT>.115){
+      g.repeatT-=dt;
+      while(g.repeatT<=0){dropTryMove(g,dir);g.repeatT+=.047}
+    }
+  }else{g.holdT=0;g.repeatT=0}
+
   if(arcadeActionPressed){
-    const nr=(g.piece.rot+1)&3;
-    if(dropValid(g,g.piece.x,g.piece.y,nr))g.piece.rot=nr;
+    dropTryRotate(g);
+    g.actionHeld=0;
   }
-  g.fall+=dt*(1.7+Math.min(1.2,g.cleared*.035));
+  if(arcadeActionDown)g.actionHeld+=dt;else g.actionHeld=0;
+
+  const fast=g.actionHeld>.16;
+  const fallRate=(2.25+Math.min(2.0,g.cleared*.055))*(fast?7.5:1);
+  g.fall+=dt*fallRate;
+
   while(g.fall>=1){
     g.fall-=1;
-    if(dropValid(g,g.piece.x,g.piece.y+1,g.piece.rot))g.piece.y++;
-    else{dropLock(g,now);break}
+    if(dropValid(g,g.piece.x,g.piece.y+1,g.piece.rot)){
+      g.piece.y++;g.lockT=0;
+    }else break;
   }
+
+  if(!dropValid(g,g.piece.x,g.piece.y+1,g.piece.rot)){
+    g.lockT+=dt;
+    if(g.lockT>=.19)dropLock(g,now);
+  }else g.lockT=0;
 }
 
-/* ---------- V20-02 もぐらたたき ---------- */
+/* ---------- V27-02 もぐらたたき / DIRECT 3-ZONE ---------- */
 function moleInit(){
   const cp=getArcadeCheckpoint("MOLE");
-  return {cursor:2,holes:Array(5).fill(0),hits:Math.max(0,cp?.hits|0),combo:0,
-          bestCombo:Math.max(0,cp?.bestCombo|0),spawn:0.25,life:0};
+  return {
+    holes:Array.from({length:3},()=>({t:0,born:0,type:"NORMAL",hit:false})),
+    hits:Math.max(0,cp?.hits|0),combo:0,bestCombo:Math.max(0,cp?.bestCombo|0),
+    spawn:.20,lastLane:1,spawnCount:0,perfects:0,lastJudge:"",judgeUntil:0
+  };
+}
+function moleSpawn(g,now){
+  const free=[0,1,2].filter(i=>g.holes[i].t<=0);
+  if(!free.length)return;
+  let lane=free[(g.spawnCount*2+g.hits)%free.length];
+  if(free.length>1&&lane===g.lastLane)lane=free[(free.indexOf(lane)+1)%free.length];
+  const gold=(g.spawnCount>0&&g.spawnCount%7===6);
+  const life=Math.max(.34,.78-g.hits*.023);
+  g.holes[lane]={t:life,born:now,type:gold?"GOLD":"NORMAL",hit:false};
+  g.lastLane=lane;g.spawnCount++;
+  if(g.hits>=8&&free.length>=2&&g.spawnCount%4===0){
+    const other=free.find(i=>i!==lane);
+    if(other!==undefined)g.holes[other]={t:life*.88,born:now+35,type:"NORMAL",hit:false};
+  }
+}
+function moleWhack(g,lane,now){
+  const h=g.holes[lane];
+  if(h&&h.t>0&&!h.hit){
+    const rt=Math.max(0,now-h.born);
+    const perfect=rt<=185;
+    const gain=h.type==="GOLD"?2:1;
+    h.hit=true;h.t=0;g.hits+=gain;
+    g.combo++;g.bestCombo=Math.max(g.bestCombo,g.combo);
+    if(perfect)g.perfects++;
+    g.lastJudge=h.type==="GOLD"?"GOLD!":perfect?"PERFECT!":"HIT!";
+    g.judgeUntil=now+420;
+    addScore((h.type==="GOLD"?900:260)+Math.max(0,520-rt)+g.combo*55,now);
+    juiceReward(h.type==="GOLD"||perfect?"power":"snap",300+lane*195,445,
+      h.type==="GOLD"?.88:perfect?.68:.46,g.lastJudge);
+    arcadeHaptic(h.type==="GOLD"?[8,20,8]:perfect?10:6);
+    setArcadeCheckpoint("MOLE",{hits:g.hits,bestCombo:g.bestCombo},"MOLE SAVE");
+    if(g.hits>=15){arcadeFinish("MOLE",now,g.perfects>=8?"15 / REACTION MASTER":"15匹！");return}
+  }else{
+    g.combo=0;g.lastJudge="スカ";g.judgeUntil=now+260;
+    juiceImpact(300+lane*195,445,.16,{label:"",n:2,shake:.25,flash:.008});
+  }
 }
 function moleUpdate(g,dt,now){
-  if(arcadeLeftPressed)g.cursor=(g.cursor+4)%5;
-  if(arcadeRightPressed)g.cursor=(g.cursor+1)%5;
-  for(let i=0;i<5;i++)if(g.holes[i]>0)g.holes[i]-=dt;
+  if(arcadeLeftPressed)moleWhack(g,0,now);
+  if(arcadeActionPressed)moleWhack(g,1,now);
+  if(arcadeRightPressed)moleWhack(g,2,now);
+
+  for(const h of g.holes){
+    if(h.t>0){
+      h.t-=dt;
+      if(h.t<=0&&!h.hit){g.combo=0;h.t=0}
+    }
+  }
   g.spawn-=dt;
   if(g.spawn<=0){
-    const empty=[];for(let i=0;i<5;i++)if(g.holes[i]<=0)empty.push(i);
-    if(empty.length){
-      const n=g.hits>=8?Math.min(2,empty.length):1;
-      for(let j=0;j<n;j++){
-        const ix=empty[(g.hits*3+j*2+Math.floor(now/700))%empty.length];
-        g.holes[ix]=Math.max(.42,1.15-g.hits*.035);
-      }
-    }
-    g.spawn=Math.max(.28,.82-g.hits*.025);
-  }
-  if(arcadeActionPressed){
-    if(g.holes[g.cursor]>0){
-      g.holes[g.cursor]=0;g.hits++;g.combo++;g.bestCombo=Math.max(g.bestCombo,g.combo);
-      addScore(220+g.combo*30,now);
-      juiceReward(g.combo%5===0?"power":"snap",300+g.cursor*98,430,.62,g.combo%5===0?`連続 ${g.combo}`:"ポン！");
-      setArcadeCheckpoint("MOLE",{hits:g.hits,bestCombo:g.bestCombo},"MOLE SAVE");
-      if(g.hits>=15){arcadeFinish("MOLE",now,"15匹！");return}
-    }else{
-      g.combo=0;
-      juiceImpact(300+g.cursor*98,430,.2,{label:"スカ",n:3,shake:.5,flash:.01});
-    }
+    moleSpawn(g,now);
+    g.spawn=Math.max(.20,.48-g.hits*.013);
   }
 }
 
-/* ---------- V21-03 ホームラン競争 ---------- */
+/* ---------- V27-03 ホームラン競争 / BUFFERED SWING ---------- */
 function homerunSpawnPitch(g,now){
   const lanes=[340,420,495,570,650];
-  const lane=lanes[(g.pitchNo*3+g.homeRuns*2)%lanes.length];
-  g.pitch={x:lane,y:165,vy:315+g.homeRuns*18,hit:false};
+  const baseX=lanes[(g.pitchNo*3+g.homeRuns*2)%lanes.length];
+  const kind=(g.pitchNo%5===3)?"CURVE":(g.pitchNo%4===2?"FAST":"STRAIGHT");
+  const curve=kind==="CURVE"?((g.pitchNo%2)?105:-105):0;
+  g.pitch={baseX,x:baseX,y:155,vy:kind==="FAST"?510:390+g.homeRuns*18,curve,kind,age:0};
   g.pitchNo++;
-  g.nextPitchAt=now+1500;
+  g.nextPitchAt=now+900;
+  g.pitchLabel=kind;
+  g.pitchLabelUntil=now+520;
 }
 function homerunInit(){
   const cp=getArcadeCheckpoint("HOMERUN");
   return {
-    x:495,vx:0,pitch:null,pitchNo:0,nextPitchAt:nowMs()+700,
-    swing:0,homeRuns:Math.max(0,cp?.homeRuns|0),
-    bestDistance:Math.max(0,cp?.bestDistance|0),
-    lastDistance:0,misses:0,flight:null
+    x:495,pitch:null,pitchNo:0,nextPitchAt:nowMs()+520,swing:0,swingBuffer:0,
+    homeRuns:Math.max(0,cp?.homeRuns|0),bestDistance:Math.max(0,cp?.bestDistance|0),
+    lastDistance:0,misses:0,flight:null,pitchLabel:"",pitchLabelUntil:0,
+    combo:0,lastJudge:"",judgeUntil:0
   };
+}
+function homerunResolveSwing(g,now){
+  if(!g.pitch)return false;
+  const dy=Math.abs(g.pitch.y-655),dx=Math.abs(g.pitch.x-g.x);
+  if(dy>92||dx>82)return false;
+
+  const perfect=dy<28&&dx<30;
+  const strong=dy<58&&dx<58;
+  const distance=Math.round(
+    perfect?150+Math.max(0,20-dx*.28-dy*.18):
+    strong?125+Math.max(0,18-dx*.16-dy*.10):
+    101+Math.max(0,14-dx*.08-dy*.06)
+  );
+  g.lastDistance=distance;g.bestDistance=Math.max(g.bestDistance,distance);
+  g.homeRuns++;g.combo++;g.swing=.16;
+  g.lastJudge=perfect?"PERFECT!":strong?"GREAT!":"HOME RUN!";
+  g.judgeUntil=now+650;
+  g.flight={x:g.pitch.x,y:g.pitch.y,vx:(g.pitch.x-g.x)*3.2,vy:-690-(perfect?90:0),life:1.15};
+  g.pitch=null;g.swingBuffer=0;
+  addScore(950+distance*9+g.combo*120,now);
+  juiceReward(perfect?"power":"item",g.x,655,perfect?1:.82,`${g.lastJudge} ${distance}m`);
+  arcadeHaptic(perfect?[12,25,12]:9);
+  if(audioReady){
+    deepSubHit(43,perfect?.34:.26,now,.32);
+    const snap=snapshotChord();
+    [0,2,4].forEach((d,i)=>warmVoiceSemi(chordTone(d,2+(i===2?1:0),snap),.055,.30,(i-1)*.18,-.06,now+i*24));
+  }
+  setArcadeCheckpoint("HOMERUN",{homeRuns:g.homeRuns,bestDistance:g.bestDistance},"HOME RUN SAVE");
+  if(g.homeRuns>=5){arcadeFinish("HOMERUN",now,g.combo>=4?"5本 / HOT STREAK":"5本ホームラン！");return true}
+  return true;
 }
 function homerunUpdate(g,dt,now){
   const dir=(rightDown?1:0)-(leftDown?1:0);
-  g.vx=lerp(g.vx,dir*390,clamp(dt*11,0,1));
-  g.x=clamp(g.x+g.vx*dt,315,675);
+  g.x=arcadeSnapMove(g.x,dir,620,dt,305,685);
   g.swing=Math.max(0,g.swing-dt);
+  g.swingBuffer=Math.max(0,g.swingBuffer-dt);
+  if(arcadeActionPressed){g.swingBuffer=.115;g.swing=.15}
 
   if(!g.pitch&&now>=g.nextPitchAt)homerunSpawnPitch(g,now);
   if(g.pitch){
+    g.pitch.age+=dt;
     g.pitch.y+=g.pitch.vy*dt;
+    const prog=clamp((g.pitch.y-155)/560,0,1);
+    g.pitch.x=g.pitch.baseX+g.pitch.curve*prog*prog;
 
-    if(arcadeActionPressed&&g.swing<=0){
-      g.swing=.18;
-      const dy=Math.abs(g.pitch.y-665);
-      const dx=Math.abs(g.pitch.x-g.x);
-      if(dy<82&&dx<72){
-        const timing=clamp(1-dy/82,0,1);
-        const center=clamp(1-dx/72,0,1);
-        const distance=Math.round(92+timing*42+center*24);
-        g.lastDistance=distance;
-        g.bestDistance=Math.max(g.bestDistance,distance);
-        g.homeRuns++;
-        g.flight={x:g.pitch.x,y:g.pitch.y,vx:(g.pitch.x-g.x)*2.5,vy:-610,life:1};
-        g.pitch=null;
-        addScore(900+distance*8,now);
-        juiceReward("power",g.x,665,1,`${distance}m HOME RUN!`);
-        if(audioReady){
-          deepSubHit(43,.30,now,.30);
-          const snap=snapshotChord();
-          [0,2,4].forEach((d,i)=>warmVoiceSemi(chordTone(d,2+(i===2?1:0),snap),.052,.30,(i-1)*.18,-.06,now+i*26));
-        }
-        setArcadeCheckpoint("HOMERUN",{homeRuns:g.homeRuns,bestDistance:g.bestDistance},"HOME RUN SAVE");
-        if(g.homeRuns>=5){arcadeFinish("HOMERUN",now,"5本ホームラン！");return}
-      }else{
-        g.misses++;
-        juiceImpact(g.x,665,.28,{label:"空振り",n:5,shake:1.2,flash:.02});
-      }
+    if(g.swingBuffer>0&&g.pitch.y>=565){
+      if(homerunResolveSwing(g,now))return;
     }
-
     if(g.pitch&&g.pitch.y>790){
-      g.pitch=null;
-      g.misses++;
-      g.nextPitchAt=now+650;
+      g.pitch=null;g.misses++;g.combo=0;g.nextPitchAt=now+430;
+      g.lastJudge="見逃し";g.judgeUntil=now+360;
       juiceImpact(495,735,.20,{label:"見逃し",n:3,shake:.5,flash:.01});
     }
+  }else if(g.swingBuffer>0&&g.swing<.13){
+    // Buffer remains briefly alive for a just-early swing.
   }
 
   if(g.flight){
-    g.flight.x+=g.flight.vx*dt;
-    g.flight.y+=g.flight.vy*dt;
-    g.flight.vy+=420*dt;
-    g.flight.life-=dt;
+    g.flight.x+=g.flight.vx*dt;g.flight.y+=g.flight.vy*dt;
+    g.flight.vy+=470*dt;g.flight.life-=dt;
     if(g.flight.life<=0)g.flight=null;
   }
 }
 
-/* ---------- V21-04 金魚すくい ---------- */
+/* ---------- V27-04 金魚すくい / QUICK SCOOP + MULTI CATCH ---------- */
 function goldfishMake(i){
-  const bands=[445,505,565,610];
+  const bands=[500,540,580,620];
   return {
-    x:275+(i*83)%440,
-    y:bands[i%bands.length],
-    baseY:bands[i%bands.length],
-    vx:(i%2?1:-1)*(58+(i%4)*16),
-    phase:i*.73,
-    taken:false
+    x:250+(i*91)%490,y:bands[i%bands.length],baseY:bands[i%bands.length],
+    vx:(i%2?1:-1)*(78+(i%4)*18),phase:i*.73,taken:false,
+    gold:i===5||i===11
   };
 }
 function goldfishInit(){
   const cp=getArcadeCheckpoint("GOLDFISH");
-  const g={
-    x:495,vx:0,fish:Array.from({length:12},(_,i)=>goldfishMake(i)),
+  return {
+    x:495,fish:Array.from({length:12},(_,i)=>goldfishMake(i)),
     caught:Math.max(0,cp?.caught|0),combo:0,bestCombo:Math.max(0,cp?.bestCombo|0),
-    cool:0,scoopT:0,scoopCaught:false,scoopY:650
+    cool:0,scoopT:0,scoopResolved:false,scoopY:650,lastCatch:0,lastJudge:"",judgeUntil:0
   };
-  return g;
+}
+function goldfishResolveScoop(g,now){
+  if(g.scoopResolved)return;
+  g.scoopResolved=true;
+  const cy=565;
+  const caughtNow=[];
+  for(const f of g.fish)if(!f.taken){
+    if(Math.hypot(f.x-g.x,f.y-cy)<72){
+      f.taken=true;caughtNow.push(f);
+    }
+  }
+  if(caughtNow.length){
+    g.lastCatch=caughtNow.length;
+    g.caught+=caughtNow.length;
+    g.combo++;g.bestCombo=Math.max(g.bestCombo,g.combo);
+    const hasGold=caughtNow.some(f=>f.gold);
+    g.lastJudge=hasGold?"金魚GET!":caughtNow.length>=2?"大漁！":"すくった！";
+    g.judgeUntil=now+620;
+    addScore(caughtNow.length*520+g.combo*80+(hasGold?800:0),now);
+    juiceReward(hasGold||caughtNow.length>=2?"power":"item",g.x,565,
+      hasGold?.92:caughtNow.length>=2?.80:.56,g.lastJudge);
+    arcadeHaptic(caughtNow.length>=2?[8,18,8]:7);
+    if(audioReady){
+      const snap=snapshotChord();
+      caughtNow.slice(0,3).forEach((f,i)=>{
+        ambientGlassSemi(chordTone((g.caught+i)%5,5,snap),.095,.25,(f.x-495)/350,now+i*24,.92);
+      });
+      airShimmer(chordTone(4,5,snap),.13,now,.34,(g.x-495)/420);
+    }
+    setArcadeCheckpoint("GOLDFISH",{caught:g.caught,bestCombo:g.bestCombo},"FISH SAVE");
+    if(g.caught>=8){arcadeFinish("GOLDFISH",now,g.bestCombo>=4?"8匹 / 大漁コンボ":"8匹すくった！");return}
+  }else{
+    g.combo=0;g.lastCatch=0;g.lastJudge="おしい！";g.judgeUntil=now+320;
+    juiceImpact(g.x,565,.15,{label:"",n:3,shake:.3,flash:.008});
+  }
 }
 function goldfishUpdate(g,dt,now){
   const dir=(rightDown?1:0)-(leftDown?1:0);
-  g.vx=lerp(g.vx,dir*360,clamp(dt*10,0,1));
-  g.x=clamp(g.x+g.vx*dt,255,735);
+  g.x=arcadeSnapMove(g.x,dir,560,dt,245,745);
   g.cool=Math.max(0,g.cool-dt);
 
   for(const f of g.fish)if(!f.taken){
-    f.phase+=dt*1.7;
-    f.x+=f.vx*dt;
-    f.y=f.baseY+Math.sin(f.phase)*22;
-    if(f.x<250){f.x=250;f.vx=Math.abs(f.vx)}
-    if(f.x>740){f.x=740;f.vx=-Math.abs(f.vx)}
+    f.phase+=dt*2.0;f.x+=f.vx*dt;
+    f.y=f.baseY+Math.sin(f.phase)*24;
+    if(f.x<240){f.x=240;f.vx=Math.abs(f.vx)}
+    if(f.x>750){f.x=750;f.vx=-Math.abs(f.vx)}
   }
 
   if(arcadeActionPressed&&g.cool<=0&&g.scoopT<=0){
-    g.cool=.30;
-    g.scoopT=.48;
-    g.scoopCaught=false;
-    juiceReward("snap",g.x,650,.24,"すくう！");
+    g.cool=.20;g.scoopT=.24;g.scoopResolved=false;
+    juiceReward("snap",g.x,650,.22,"");
   }
 
   if(g.scoopT>0){
     g.scoopT=Math.max(0,g.scoopT-dt);
-    const phase=1-g.scoopT/.48;
-    g.scoopY=650-Math.sin(clamp(phase,0,1)*Math.PI)*155;
-
-    if(!g.scoopCaught){
-      let best=null,bd=999;
-      for(const f of g.fish)if(!f.taken){
-        const d=Math.hypot(f.x-g.x,f.y-g.scoopY);
-        if(d<bd){bd=d;best=f}
-      }
-      // Wide but readable catch zone. If the poi visibly overlaps a fish, it catches.
-      if(best&&bd<62){
-        best.taken=true;
-        g.scoopCaught=true;
-        g.caught++;g.combo++;g.bestCombo=Math.max(g.bestCombo,g.combo);
-        addScore(420+g.combo*55,now);
-        juiceReward(g.combo%4===0?"power":"item",best.x,best.y,.72,
-          g.combo%4===0?`連続 ${g.combo}匹！`:"すくった！");
-        if(audioReady){
-          const snap=snapshotChord();
-          ambientGlassSemi(chordTone((g.caught+2)%5,5,snap),.11,.28,(best.x-495)/350,now,.92);
-          airShimmer(chordTone(4,5,snap),.12,now,.36,(best.x-495)/420);
-        }
-        setArcadeCheckpoint("GOLDFISH",{caught:g.caught,bestCombo:g.bestCombo},"FISH SAVE");
-        if(g.caught>=8){arcadeFinish("GOLDFISH",now,"8匹すくった！");return}
-      }
-    }
-
-    if(g.scoopT<=0){
-      g.scoopY=650;
-      if(!g.scoopCaught){
-        g.combo=0;
-        juiceImpact(g.x,650,.16,{label:"おしい！",n:3,shake:.35,flash:.01});
-      }
-    }
+    const phase=1-g.scoopT/.24;
+    g.scoopY=650-Math.sin(clamp(phase,0,1)*Math.PI)*105;
+    if(phase>=.36&&!g.scoopResolved)goldfishResolveScoop(g,now);
+    if(g.scoopT<=0)g.scoopY=650;
   }else g.scoopY=650;
 }
 
-/* ---------- V20-05 クレーンゲーム ---------- */
-function cranePrize(i){return {x:300+(i*121)%390,y:655-(i%2)*30,w:55,h:42,taken:false,phase:i*.9}}
+/* ---------- V27-05 クレーンゲーム / FAST DROP + NUDGE ---------- */
+function cranePrize(i){
+  return {x:285+(i*121)%420,y:650-(i%2)*35,w:58,h:44,taken:false,phase:i*.9};
+}
 function craneInit(){
   const cp=getArcadeCheckpoint("CRANE");
-  return {x:495,vx:0,clawY:180,mode:"MOVE",target:null,prizes:Array.from({length:7},(_,i)=>cranePrize(i)),
-          caught:Math.max(0,cp?.caught|0),tries:Math.max(0,cp?.tries|0)};
+  return {
+    x:495,clawY:175,mode:"MOVE",prizes:Array.from({length:7},(_,i)=>cranePrize(i)),
+    carried:[],caught:Math.max(0,cp?.caught|0),tries:Math.max(0,cp?.tries|0),
+    grabQuality:0,lastJudge:"",judgeUntil:0
+  };
 }
 function craneUpdate(g,dt,now){
   const dir=(rightDown?1:0)-(leftDown?1:0);
+
   if(g.mode==="MOVE"){
-    g.vx=lerp(g.vx,dir*300,clamp(dt*10,0,1));g.x=clamp(g.x+g.vx*dt,260,730);
-    for(const p of g.prizes)if(!p.taken){p.phase+=dt;p.x+=Math.sin(p.phase)*7*dt}
-    if(arcadeActionPressed){g.mode="DOWN";g.tries++;juiceReward("snap",g.x,190,.28,"おろす！")}
+    g.x=arcadeSnapMove(g.x,dir,520,dt,250,740);
+    for(const p of g.prizes)if(!p.taken){p.phase+=dt*1.4;p.x+=Math.sin(p.phase)*4*dt}
+    if(arcadeActionPressed){
+      g.mode="DOWN";g.tries++;g.carried=[];g.grabQuality=0;
+      juiceReward("snap",g.x,190,.28,"DROP!");
+    }
   }else if(g.mode==="DOWN"){
-    g.clawY+=390*dt;
-    if(g.clawY>=620){
-      let best=null,bd=999;
-      for(const p of g.prizes)if(!p.taken){
-        const d=Math.abs(p.x-g.x);if(d<bd){bd=d;best=p}
+    // The player can still correct the claw while it descends.
+    g.x=arcadeSnapMove(g.x,dir,250,dt,250,740);
+    g.clawY+=860*dt;
+    if(g.clawY>=610){
+      g.clawY=610;
+      const candidates=g.prizes.filter(p=>!p.taken)
+        .map(p=>({p,d:Math.abs(p.x-g.x)}))
+        .sort((a,b)=>a.d-b.d);
+      if(candidates.length&&candidates[0].d<72){
+        const q=clamp(1-candidates[0].d/72,0,1);
+        g.grabQuality=q;
+        g.carried.push(candidates[0].p);
+        if(q>.88&&candidates[1]&&candidates[1].d<58)g.carried.push(candidates[1].p);
+        g.carried.forEach(p=>p.taken=true);
       }
-      if(best&&bd<48){g.target=best;g.target.taken=true}
       g.mode="UP";
     }
   }else if(g.mode==="UP"){
-    g.clawY-=420*dt;
-    if(g.clawY<=180){
-      g.clawY=180;
-      if(g.target){
-        g.caught++;addScore(1100,now);juiceReward("power",g.x,230,.88,`GET! ${g.caught}/3`);
+    g.clawY-=1050*dt;
+    if(g.clawY<=175){
+      g.clawY=175;
+      if(g.carried.length){
+        const n=g.carried.length;
+        g.caught+=n;addScore(1050*n+(g.grabQuality>.88?700:0),now);
+        g.lastJudge=g.grabQuality>.88?(n>=2?"DOUBLE GET!":"PERFECT GET!"):"GET!";
+        g.judgeUntil=now+650;
+        juiceReward(g.grabQuality>.88?"power":"item",g.x,230,.92,`${g.lastJudge} ${Math.min(g.caught,3)}/3`);
+        arcadeHaptic(g.grabQuality>.88?[10,22,10]:8);
         setArcadeCheckpoint("CRANE",{caught:g.caught,tries:g.tries},"PRIZE SAVE");
-        g.target=null;
-        if(g.caught>=3){arcadeFinish("CRANE",now,"3個GET！");return}
-      }else juiceImpact(g.x,230,.18,{label:"おしい！",n:3,shake:.4,flash:.01});
+        g.carried=[];
+        if(g.caught>=3){arcadeFinish("CRANE",now,g.grabQuality>.88?"3個 / PERFECT GRAB":"3個GET！");return}
+      }else{
+        g.lastJudge="おしい！";g.judgeUntil=now+360;
+        juiceImpact(g.x,230,.18,{label:"おしい！",n:3,shake:.4,flash:.01});
+      }
       g.mode="MOVE";
     }
   }
 }
 
-/* ---------- V24-10 だるま落とし / SMASH RUSH ---------- */
+/* ---------- V27-06 だるま落とし / DIRECT LEFT-RIGHT HIT ---------- */
 function darumaInit(){
   const cp=getArcadeCheckpoint("DARUMA");
   const removed=clamp(cp?.removed|0,0,5);
   return {
-    removed,
-    side:removed%2===0?-1:1,
-    phase:removed*.77,
-    hitLock:0,
-    dropAnim:0,
-    hammerAnim:0,
-    hammerSide:0,
-    flying:[],
-    combo:0,
-    bestCombo:Math.max(0,cp?.bestCombo|0),
-    perfectTotal:Math.max(0,cp?.perfectTotal|0),
-    misses:0,
-    rush:0,
-    lastJudge:"",
-    message:"出っ張った側を A / D で選ぶ",
-    messageUntil:nowMs()+1200,
-    impact:0
+    removed,phase:removed*.77,hitLock:0,dropAnim:0,hammerAnim:0,hammerSide:0,
+    flying:[],combo:0,bestCombo:Math.max(0,cp?.bestCombo|0),
+    perfectTotal:Math.max(0,cp?.perfectTotal|0),misses:0,rush:0,
+    lastJudge:"",message:"出っ張った側を直接叩く",messageUntil:nowMs()+900,impact:0
   };
 }
-function darumaOffset(g){
-  // Readable side-to-side slide. It gets faster, never more complicated.
-  return Math.sin(g.phase);
-}
+function darumaOffset(g){return Math.sin(g.phase)}
 function darumaExposure(g){return Math.abs(darumaOffset(g))}
 function darumaTargetSide(g){return darumaOffset(g)<0?-1:1}
-function darumaSpeed(g){return 1.45+g.removed*.13+(g.rush>0?.18:0)}
+function darumaSpeed(g){return 1.28+g.removed*.11+(g.rush>0?.16:0)}
 function darumaBurst(g,now,side,perfect){
   const y=650-g.removed*56;
   g.flying.push({
-    x:495+side*20,y,
-    vx:-side*(640+(perfect?180:0)),
-    vy:-(perfect?150:95),
-    rot:0,vr:-side*(perfect?14:10),life:1.35,
-    perfect
+    x:495+side*20,y,vx:-side*(700+(perfect?210:0)),
+    vy:-(perfect?165:105),rot:0,vr:-side*(perfect?15:11),life:1.25,perfect
   });
-  g.hammerAnim=.20;g.hammerSide=side;g.dropAnim=.34;g.impact=.22;
-  juiceImpact(495+side*108,y,.90,{label:perfect?"PERFECT!":"SMASH!",n:perfect?28:20,shake:perfect?10:7,flash:perfect?.16:.10});
+  g.hammerAnim=.17;g.hammerSide=side;g.dropAnim=.30;g.impact=.20;
+  juiceImpact(495+side*108,y,.92,{label:perfect?"PERFECT!":"SMASH!",n:perfect?30:21,shake:perfect?10:7,flash:perfect?.16:.10});
+  arcadeHaptic(perfect?[12,25,12]:9);
   if(audioReady){
-    deepSubHit(perfect?43:41,perfect?.28:.20,now,.34);
-    drumClap(perfect?.64:.46,now+.018);
-    drumPerc(perfect?.52:.36,now+.060,side*.24);
-    if(perfect||g.rush>0)chipNoise(.22,now+.105,.040,-side*.30);
+    deepSubHit(perfect?43:41,perfect?.30:.22,now,.34);
+    drumClap(perfect?.66:.48,now+.018);
+    drumPerc(perfect?.54:.38,now+.055,side*.24);
+    if(perfect||g.rush>0)chipNoise(.23,now+.095,.040,-side*.30);
   }
 }
-function darumaStrike(g,now){
+function darumaStrike(g,now,side){
   if(!g||g.hitLock>0||g.removed>=6)return false;
-  g.hitLock=.28;
-  const target=darumaTargetSide(g);
-  const exposure=darumaExposure(g);
-  const correct=g.side===target;
+  g.hitLock=.17;
+  const target=darumaTargetSide(g),exposure=darumaExposure(g);
+  const correct=side===target;
 
-  if(correct&&exposure>=.60){
-    const perfect=exposure>=.90;
-    g.combo++;
-    g.bestCombo=Math.max(g.bestCombo,g.combo);
+  if(correct&&exposure>=.52){
+    const perfect=exposure>=.86;
+    g.combo++;g.bestCombo=Math.max(g.bestCombo,g.combo);
     if(perfect)g.perfectTotal++;
     if(g.combo>=3)g.rush=Math.max(g.rush,3);
-    const side=g.side;
     darumaBurst(g,now,side,perfect);
     g.removed++;
     if(g.rush>0)g.rush--;
-    addScore((perfect?1050:620)+g.combo*120,now);
+    addScore((perfect?1100:650)+g.combo*130,now);
     g.lastJudge=perfect?"PERFECT":"SMASH";
-    g.message=perfect?(g.combo>=3?"RUSH! 次も一撃！":"芯！ PERFECT!"):"抜けた！ 次！";
-    g.messageUntil=now+720;
-    setArcadeCheckpoint("DARUMA",{
-      removed:g.removed,bestCombo:g.bestCombo,perfectTotal:g.perfectTotal
-    },"DARUMA SMASH SAVE");
-    if(g.removed>=6){
-      // Keep this path deliberately tiny and deterministic.
-      arcadeFinish("DARUMA",now,g.bestCombo>=4?"6段 / SMASH RUSH!":"6段クリア！");
-    }
+    g.message=perfect?(g.combo>=3?"RUSH! そのまま！":"芯！ PERFECT!"):"抜けた！";
+    g.messageUntil=now+520;
+    setArcadeCheckpoint("DARUMA",{removed:g.removed,bestCombo:g.bestCombo,perfectTotal:g.perfectTotal},"DARUMA SMASH SAVE");
+    if(g.removed>=6)arcadeFinish("DARUMA",now,g.bestCombo>=4?"6段 / SMASH RUSH!":"6段クリア！");
     return true;
   }
 
   g.combo=0;g.rush=0;g.misses++;
-  g.lastJudge=!correct?"反対側！":"まだ早い！";
-  g.message=!correct?"出っ張った側から叩く！":"もっと出てから SPACE！";
-  g.messageUntil=now+760;
-  g.hammerAnim=.16;g.hammerSide=g.side;g.impact=.10;
-  juiceImpact(495+g.side*105,650-g.removed*56,.34,{label:g.lastJudge,n:6,shake:2,flash:.025});
-  if(audioReady){drumPerc(.20,now,g.side*.28);chipNoise(.08,now,.018,0)}
+  g.lastJudge=!correct?"反対！":"早い！";
+  g.message=!correct?"出た側を叩く！":"もっと出てから！";
+  g.messageUntil=now+480;
+  g.hammerAnim=.13;g.hammerSide=side;g.impact=.08;
+  juiceImpact(495+side*105,650-g.removed*56,.34,{label:g.lastJudge,n:6,shake:2,flash:.025});
+  arcadeHaptic(5);
+  if(audioReady){drumPerc(.20,now,side*.28);chipNoise(.08,now,.018,0)}
   if(g.misses>=3){
-    setArcadeCheckpoint("DARUMA",{
-      removed:g.removed,bestCombo:g.bestCombo,perfectTotal:g.perfectTotal
-    },"DARUMA FAIL");
+    setArcadeCheckpoint("DARUMA",{removed:g.removed,bestCombo:g.bestCombo,perfectTotal:g.perfectTotal},"DARUMA FAIL");
     leaveBonus(now,false);
   }
   return false;
@@ -8407,18 +8531,18 @@ function darumaUpdate(g,dt,now){
   g.hammerAnim=Math.max(0,g.hammerAnim-safeDt);
   g.impact=Math.max(0,g.impact-safeDt);
 
-  if(arcadeLeftPressed){g.side=-1;g.message="左から叩く";g.messageUntil=now+320}
-  if(arcadeRightPressed){g.side=1;g.message="右から叩く";g.messageUntil=now+320}
-  if(arcadeActionPressed)darumaStrike(g,now);
+  // A/D are the strike itself: no select-then-confirm latency.
+  if(arcadeLeftPressed)darumaStrike(g,now,-1);
+  if(arcadeRightPressed)darumaStrike(g,now,1);
 
   for(const b of g.flying){
-    b.x+=b.vx*safeDt;b.y+=b.vy*safeDt;b.vy+=690*safeDt;
+    b.x+=b.vx*safeDt;b.y+=b.vy*safeDt;b.vy+=720*safeDt;
     b.rot+=b.vr*safeDt;b.life-=safeDt;
   }
   g.flying=g.flying.filter(b=>Number.isFinite(b.x)&&Number.isFinite(b.y)&&b.life>0);
 }
 
-/* ---------- HUB + common update ---------- */
+/* ---------- HUB + common update ---------- *//* ---------- HUB + common update ---------- */
 function arcadeUpdate(dt,now){
   if(bonusGame.stage!=="AR15")return;
 
@@ -8452,9 +8576,9 @@ function storyGoalStatus(id){
   if(id==="BREAKOUT")return {label:"ブロックを全部こわせ！",value:bonusGame.broken||0,max:24,phase:""};
   if(id==="DRIVE"){const r=bonusGame.race;return {label:"2000m走りきれ！",value:r?Math.min(r.distanceM,r.targetM):0,max:r?.targetM||2000,phase:""}}
   if(id==="KINGDOM"){const k=bonusGame.kingdom;return {label:"ゴールまで行け！",value:k?Math.min(k.player.x,k.goalX):0,max:k?.goalX||4140,phase:`CP ${k?.checkpoint||0}/3`}}
-  if(id==="SHOOTER"){const g=ARCADE15.g;return g?{label:"敵をぜんぶ撃て！",value:g.kills,max:20,phase:`ライフ ${g.lives}`} : null}
+  if(id==="SHOOTER"){const g=ARCADE15.g;return g?{label:"敵をぜんぶ撃て！",value:g.kills,max:20,phase:`LIFE ${g.lives} · CHAIN ×${g.combo}`} : null}
   if(id==="DROP"){const g=ARCADE15.g;return g?{label:"同じ色を4つ！",value:Math.min(g.cleared,20),max:20,phase:g.chain>=2?`${g.chain}れんさ`:""} : null}
-  if(id==="MOLE"){const g=ARCADE15.g;return g?{label:"モグラを叩け！",value:g.hits,max:15,phase:`連続 ${g.combo}`} : null}
+  if(id==="MOLE"){const g=ARCADE15.g;return g?{label:"出た場所を直接叩け！",value:Math.min(g.hits,15),max:15,phase:`COMBO ×${g.combo}`} : null}
   if(id==="HOMERUN"){const g=ARCADE15.g;return g?{label:"5本ホームラン！",value:g.homeRuns,max:5,phase:g.lastDistance?`直前 ${g.lastDistance}m`:"球をよく見ろ"} : null}
   if(id==="GOLDFISH"){const g=ARCADE15.g;return g?{label:"金魚をすくえ！",value:g.caught,max:8,phase:`連続 ${g.combo}`} : null}
   if(id==="CRANE"){const g=ARCADE15.g;return g?{label:"景品を取れ！",value:g.caught,max:3,phase:`挑戦 ${g.tries}`} : null}
@@ -8616,18 +8740,19 @@ function drawFishing(g){
 }
 function drawShooter(g){
   const def=ARCADE_DEFS.find(d=>d.id==="SHOOTER");
-  arcadeHeader(def,`敵20体 · ${g.kills}/20　ライフ ${g.lives}`);
+  arcadeHeader(def,`敵20体 · ${g.kills}/20　ライフ ${g.lives}　CHAIN ×${g.combo}`);
   for(const e of g.enemies)if(e.alive){
-    rect(e.x-24,e.y-15,48,30,C.paper);
+    const flash=e.flash>0;
+    rect(e.x-24,e.y-15,48,30,flash?C.accent:C.paper);
     rect(e.x-13,e.y-6,7,6,C.bg);rect(e.x+6,e.y-6,7,6,C.bg);
-    line(e.x-20,e.y+18,e.x-10,e.y+28,C.paper,4);line(e.x+20,e.y+18,e.x+10,e.y+28,C.paper,4);
+    line(e.x-20,e.y+18,e.x-10,e.y+28,C.cool,4);line(e.x+20,e.y+18,e.x+10,e.y+28,C.cool,4);
   }
-  for(const b of g.bullets)line(b.x,b.y,b.x,b.y+18,C.accent,4);
+  for(const b of g.bullets)line(b.x,b.y,b.x,b.y+22,C.accent,5);
   for(const b of g.enemyBullets)circle(b.x,b.y,7,C.cool);
-  const blink=nowMs()<g.invulnUntil&&Math.floor(nowMs()/80)%2===0;
-  if(!blink){rect(g.x-28,735,56,20,C.accent);line(g.x,715,g.x,735,C.paper,5)}
-  text("A / D で移動　　SPACE で撃つ",495,790,7,C.paper,"center",900);
-  text(`あと ${Math.max(0,20-g.kills)}体`,495,830,7,C.accent,"center",900);
+  const blink=nowMs()<g.invulnUntil&&Math.floor(nowMs()/70)%2===0;
+  if(!blink){rect(g.x-30,735,60,20,C.accent);line(g.x,711,g.x,735,C.paper,5)}
+  text("A / D = 即移動　SPACE長押し = 連射",495,790,7,C.paper,"center",900);
+  text(`あと ${Math.max(0,20-g.kills)}体　BEST CHAIN ×${g.bestCombo}`,495,832,6.5,C.accent,"center",900);
 }
 function drawClimber(g){
   arcadeHeader(ARCADE_DEFS[10],`ASCEND 1800m · ${Math.floor(g.height)}/1800 · ECHO ×${g.combo}`);
@@ -8755,123 +8880,135 @@ function drawDrop(g){
     rect(ox+c*cs,oy+r*cs,cs-3,cs-3,C.bg);
     if(g.board[r][c]>=0)circle(ox+c*cs+cs/2,oy+r*cs+cs/2,16,v20Color(g.board[r][c]));
   }
-  for(const q of dropCells(g.piece)){
-    if(q.y>=0)circle(ox+q.x*cs+cs/2,oy+q.y*cs+cs/2,17,v20Color(q.c));
+  for(const q of dropCells(g.piece))if(q.y>=0){
+    circle(ox+q.x*cs+cs/2,oy+q.y*cs+cs/2,17,v20Color(q.c));
   }
-  text("同じ色を4つつなげると消える！",495,690,7,C.paper,"center",900);
-  text("A / D 移動　　SPACE 回転",495,730,6,C.cool,"center",850);
-  text(`消した数 ${g.cleared}/20${g.chain>=2?`　${g.chain}れんさ！`:""}`,495,785,6,C.accent,"center",900);
+  if(g.nextPair){
+    text("NEXT",700,210,5,C.muted,"center",850);
+    circle(680,252,15,v20Color(g.nextPair[0]));circle(720,252,15,v20Color(g.nextPair[1]));
+  }
+  if(g.lockT>0){
+    const p=clamp(g.lockT/.19,0,1);
+    rect(ox,660,cs*6*p,5,C.accent);
+  }
+  text("A / D 移動　SPACE 回転　長押しで高速落下",495,708,6,C.paper,"center",900);
+  text(`消した ${g.cleared}/20${g.chain>=2?`　${g.chain}れんさ！`:""}　BEST ${g.bestChain}`,495,772,6.5,C.accent,"center",900);
 }
 function drawMole(g){
-  const def=ARCADE_DEFS.find(d=>d.id==="MOLE");arcadeHeader(def,`15匹叩く · ${g.hits}/15`);
-  text("出たら叩く！",495,170,10,C.paper,"center",950);
-  for(let i=0;i<5;i++){
-    const x=300+i*98,y=445,sel=i===g.cursor,on=g.holes[i]>0;
-    circle(x,y,42,C.soft);circle(x,y+8,32,C.bg);
-    if(on){circle(x,y-5,25,C.accent);circle(x-9,y-9,3,C.bg);circle(x+9,y-9,3,C.bg)}
-    if(sel)circle(x,y,50,null,C.paper,3);
-    text(String(i+1),x,y+72,4,C.muted,"center",800);
+  const def=ARCADE_DEFS.find(d=>d.id==="MOLE");arcadeHeader(def,`15匹 · ${g.hits}/15　COMBO ×${g.combo}`);
+  const xs=[300,495,690];
+  text("出た場所をそのまま叩く！",495,165,10,C.paper,"center",950);
+  for(let i=0;i<3;i++){
+    const h=g.holes[i],x=xs[i],y=450,on=h.t>0;
+    circle(x,y,70,C.soft);circle(x,y+16,52,C.bg);
+    if(on){
+      const gold=h.type==="GOLD";
+      const pop=clamp(h.t/.78,0,1);
+      circle(x,y-12,37,gold?C.cool:C.accent);
+      circle(x-13,y-18,4,C.bg);circle(x+13,y-18,4,C.bg);
+      if(gold)text("★",x,y+2,9,C.bg,"center",950);
+      circle(x,y-12,47+Math.sin(nowMs()*.02)*3,null,C.paper,2);
+    }
+    text(i===0?"A / 左":i===1?"SPACE / 中央":"D / 右",x,570,5.5,C.paper,"center",900);
   }
-  text(`15匹でクリア　　いま ${g.hits}/15`,495,690,7,C.accent,"center",900);
-  text("A / D で選ぶ　　SPACE で叩く",495,745,6,C.paper,"center",850);
+  if(nowMs()<g.judgeUntil)text(g.lastJudge,495,655,13,g.lastJudge.includes("PERFECT")||g.lastJudge.includes("GOLD")?C.accent:C.paper,"center",980);
+  text(`15匹でクリア　BEST COMBO ×${g.bestCombo}　PERFECT ${g.perfects}`,495,780,6.5,C.accent,"center",900);
 }
 function drawHomerun(g){
   const def=ARCADE_DEFS.find(d=>d.id==="HOMERUN");arcadeHeader(def,`5本ホームラン · ${g.homeRuns}/5`);
-  // batting cage
   line(260,150,730,150,C.line,1);line(300,760,690,760,C.paper,2);
   [340,420,495,570,650].forEach(x=>line(x,175,x,725,C.line,.45));
+  // visible sweet zone
+  rect(300,605,390,105,"rgba(255,255,255,.025)");
+  line(300,655,690,655,C.cool,2);
 
-  if(g.pitch)circle(g.pitch.x,g.pitch.y,11,C.paper);
-  if(g.flight)circle(g.flight.x,g.flight.y,9,C.accent);
+  if(g.pitch){
+    circle(g.pitch.x,g.pitch.y,12,C.paper);
+    line(g.pitch.x,g.pitch.y,g.pitch.baseX,g.pitch.y-38,C.line,1);
+  }
+  if(g.flight)circle(g.flight.x,g.flight.y,10,C.accent);
 
-  // batter + bat
-  circle(g.x,650,18,C.accent);
-  line(g.x,668,g.x,712,C.paper,6);
+  circle(g.x,650,18,C.accent);line(g.x,668,g.x,712,C.paper,6);
   line(g.x-14,728,g.x,710,C.paper,5);line(g.x+14,728,g.x,710,C.paper,5);
-  const swingA=g.swing>0?-0.75:-0.18;
-  line(g.x+6,674,g.x+Math.cos(swingA)*72,674+Math.sin(swingA)*72,C.cool,8);
-  // The line above is replaced below in cleanup because JS has no Python conditional.
-  text("ボールがバットの前に来たら SPACE！",495,790,6.8,C.paper,"center",900);
-  text(`HOME RUN ${g.homeRuns}/5　BEST ${g.bestDistance||0}m`,495,830,6.5,C.accent,"center",900);
+  const swingA=g.swing>0?-0.80:-0.18;
+  line(g.x+6,674,g.x+Math.cos(swingA)*78,674+Math.sin(swingA)*78,C.cool,8);
+
+  if(nowMs()<g.pitchLabelUntil)text(g.pitchLabel,495,220,7,C.cool,"center",900);
+  if(nowMs()<g.judgeUntil)text(g.lastJudge,495,560,12,g.lastJudge==="PERFECT!"?C.accent:C.paper,"center",980);
+  text("球が白線に来たら SPACE！　少し早めでも入力受付",495,790,6.3,C.paper,"center",900);
+  text(`HOME RUN ${g.homeRuns}/5　BEST ${g.bestDistance||0}m　STREAK ×${g.combo}`,495,832,6.3,C.accent,"center",900);
 }
 function drawGoldfish(g){
   const def=ARCADE_DEFS.find(d=>d.id==="GOLDFISH");arcadeHeader(def,`8匹すくう · ${g.caught}/8`);
   rect(220,150,550,535,C.soft);
-  for(let i=0;i<9;i++)line(220,190+i*55,770,190+i*55,C.line,.48);
+  for(let i=0;i<9;i++)line(220,190+i*55,770,190+i*55,C.line,.45);
   for(const f of g.fish)if(!f.taken){
     ctx.save();ctx.translate(f.x,f.y);
-    circle(0,0,13,C.accent);
-    ctx.beginPath();ctx.moveTo(-10,0);ctx.lineTo(-30,-13);ctx.lineTo(-30,13);ctx.closePath();ctx.fillStyle=C.accent;ctx.fill();
-    circle(6,-3,2,C.bg);
+    circle(0,0,f.gold?16:13,f.gold?C.cool:C.accent);
+    ctx.beginPath();ctx.moveTo(-10,0);ctx.lineTo(-30,-13);ctx.lineTo(-30,13);ctx.closePath();ctx.fillStyle=f.gold?C.cool:C.accent;ctx.fill();
+    circle(6,-3,2,C.bg);if(f.gold)text("★",0,5,5,C.bg,"center",950);
     ctx.restore();
   }
+  circle(g.x,565,72,null,"rgba(255,255,255,.10)",1);
   circle(g.x,g.scoopY,43,null,C.paper,g.scoopT>0?4:2);
   line(g.x+30,g.scoopY+28,g.x+62,g.scoopY+78,C.paper,3);
   if(g.scoopT>0)circle(g.x,g.scoopY,50,null,C.cool,1.5);
-  text("ポイを金魚に重ねて SPACE！",495,725,7,C.paper,"center",900);
-  text(`すくった ${g.caught}/8　　連続 ${g.combo}`,495,785,7,C.accent,"center",900);
+  if(nowMs()<g.judgeUntil)text(g.lastJudge,495,700,11,C.accent,"center",960);
+  text("A / D でポイ移動　SPACEで素早くすくう",495,755,6.5,C.paper,"center",900);
+  text(`すくった ${g.caught}/8　連続 ${g.combo}　BEST ${g.bestCombo}`,495,812,6.5,C.accent,"center",900);
 }
 function drawCrane(g){
   const def=ARCADE_DEFS.find(d=>d.id==="CRANE");arcadeHeader(def,`景品3個 · ${g.caught}/3`);
   line(235,145,755,145,C.paper,4);
   line(g.x,145,g.x,g.clawY,C.cool,3);
-  line(g.x-22,g.clawY,g.x,g.clawY+28,C.paper,4);line(g.x+22,g.clawY,g.x,g.clawY+28,C.paper,4);
+  const open=g.mode==="DOWN"?31:22;
+  line(g.x-open,g.clawY,g.x,g.clawY+31,C.paper,4);
+  line(g.x+open,g.clawY,g.x,g.clawY+31,C.paper,4);
+
   for(const p of g.prizes)if(!p.taken){
-    rect(p.x-p.w/2,p.y-p.h/2,p.w,p.h,C.soft);rect(p.x-p.w/2+5,p.y-p.h/2+5,p.w-10,p.h-10,C.accent);
+    rect(p.x-p.w/2,p.y-p.h/2,p.w,p.h,C.soft);
+    rect(p.x-p.w/2+5,p.y-p.h/2+5,p.w-10,p.h-10,C.accent);
   }
-  text("景品の真上で SPACE！",495,730,7,C.paper,"center",900);
-  text(`GET ${g.caught}/3　　挑戦 ${g.tries}`,495,790,6,C.accent,"center",900);
+  for(const p of g.carried||[]){
+    rect(g.x-p.w/2,g.clawY+30,p.w,p.h,C.accent);
+  }
+  if(nowMs()<g.judgeUntil)text(g.lastJudge,495,525,12,C.accent,"center",980);
+  text(g.mode==="MOVE"?"景品の上で SPACE！":"下降中も A / D で微調整できる",495,735,7,C.paper,"center",900);
+  text(`GET ${g.caught}/3　挑戦 ${g.tries}`,495,795,6.5,C.accent,"center",900);
 }
 function drawDaruma(g){
   if(!g)return;
   const def=ARCADE_DEFS.find(d=>d.id==="DARUMA");
-  arcadeHeader(def,`6段叩き抜く · ${g.removed}/6　COMBO ×${g.combo}`);
-
+  arcadeHeader(def,`6段 · ${g.removed}/6　COMBO ×${g.combo}`);
   const cx=495,baseY=690,blockW=235,blockH=56;
-  const remain=Math.max(0,6-g.removed);
-  const off=darumaOffset(g);
-  const exposure=Math.abs(off);
-  const target=off<0?-1:1;
-  const slide=off*72;
-  const drop=g.dropAnim>0?Math.sin((1-g.dropAnim/.34)*Math.PI)*28:0;
+  const remain=Math.max(0,6-g.removed),off=darumaOffset(g),exposure=Math.abs(off);
+  const target=off<0?-1:1,slide=off*78;
+  const drop=g.dropAnim>0?Math.sin((1-g.dropAnim/.30)*Math.PI)*30:0;
 
-  line(230,730,760,730,C.line,2);
-  rect(360,715,270,12,C.soft);
-
-  // Remaining tower. Only the lowest block slides; the rule is visible in the object itself.
+  line(230,730,760,730,C.line,2);rect(360,715,270,12,C.soft);
   for(let i=0;i<remain;i++){
-    const y=baseY-i*blockH+drop;
-    const active=i===0;
-    const x=cx+(active?slide:0);
+    const y=baseY-i*blockH+drop,active=i===0,x=cx+(active?slide:0);
     rect(x-blockW/2,y-blockH+5,blockW,blockH-9,active?C.paper:(i%2?C.cool:C.muted));
     rect(x-blockW/2+8,y-blockH+13,blockW-16,blockH-25,C.bg);
     if(active){
-      // Bright impact cap on the protruding side.
       const capX=x+target*(blockW/2-12);
-      circle(capX,y-25,exposure>=.90?16:11,exposure>=.60?C.accent:C.cool);
-      if(exposure>=.60)text(exposure>=.90?"PERFECT":"HIT",capX,y-62,5,C.accent,"center",950);
+      circle(capX,y-25,exposure>=.86?18:12,exposure>=.52?C.accent:C.cool);
+      if(exposure>=.52)text(exposure>=.86?"PERFECT":"HIT",capX,y-62,5,C.accent,"center",950);
     }
   }
-
-  // Daruma falls one whole tier after every successful strike.
   const topY=baseY-remain*blockH+drop-5;
   circle(cx,topY-47,56,C.accent);
   circle(cx-18,topY-58,7,C.paper);circle(cx+18,topY-58,7,C.paper);
   circle(cx-18,topY-58,3,C.bg);circle(cx+18,topY-58,3,C.bg);
   line(cx-20,topY-25,cx+20,topY-25,C.bg,3);
 
-  // Hammer selection. One side glows; A/D simply swaps sides.
   for(const side of [-1,1]){
-    const hx=side<0?225:765;
-    const selected=g.side===side;
-    const anim=(g.hammerAnim>0&&g.hammerSide===side)?Math.sin((1-g.hammerAnim/.20)*Math.PI)*82:0;
-    const dir=side<0?1:-1;
-    line(hx,600,hx+dir*(68+anim),625,selected?C.paper:C.muted,selected?13:8);
-    rect(hx+dir*(76+anim)-34,594,68,54,selected?C.accent:C.soft);
-    text(side<0?"A  LEFT":"D  RIGHT",hx,682,5.5,selected?C.paper:C.muted,"center",900);
+    const hx=side<0?225:765,anim=(g.hammerAnim>0&&g.hammerSide===side)?Math.sin((1-g.hammerAnim/.17)*Math.PI)*88:0;
+    const dir=side<0?1:-1,hot=side===target&&exposure>=.52;
+    line(hx,600,hx+dir*(68+anim),625,hot?C.paper:C.muted,hot?13:8);
+    rect(hx+dir*(76+anim)-34,594,68,54,hot?C.accent:C.soft);
+    text(side<0?"A = HIT":"D = HIT",hx,682,5.5,hot?C.paper:C.muted,"center",900);
   }
-
-  // Flying blocks = primary spectacle.
   for(const b of g.flying){
     ctx.save();ctx.translate(b.x,b.y);ctx.rotate(b.rot);
     rect(-blockW/2,-blockH/2,blockW,blockH-9,b.perfect?C.accent:C.cool);
@@ -8879,20 +9016,12 @@ function drawDaruma(g){
     ctx.restore();
   }
 
-  const ready=exposure>=.60&&g.side===target;
   const live=g.messageUntil>nowMs()?g.message:
-    ready?(exposure>=.90?"いま！ PERFECT CHANCE！":"SPACEで叩け！"):
-    target<0?"左に出てくる → A":"右に出てくる → D";
+    target<0?(exposure>=.52?"いま A！":"左に出るのを待つ"):(exposure>=.52?"いま D！":"右に出るのを待つ");
   text(live,495,112,8,C.paper,"center",950);
-
-  // Giant readable side cue, no meters or hidden physics.
-  text(target<0?"← LEFT":"RIGHT →",495,165,8,exposure>=.60?C.accent:C.muted,"center",900);
-  rect(320,775,350,12,C.soft);
-  rect(320,775,350*exposure,12,exposure>=.90?C.accent:exposure>=.60?C.cool:C.muted);
-  text("出っ張り",300,786,4.5,C.muted,"right",850);
-
-  if(g.combo>=3||g.rush>0)text("SMASH RUSH!",495,832,11,C.accent,"center",980);
-  text(`抜いた ${g.removed}/6　COMBO ×${g.combo}　ミス ${g.misses}/3`,495,872,5.5,C.cool,"center",900);
+  text(target<0?"← A":"D →",495,165,10,exposure>=.52?C.accent:C.muted,"center",950);
+  if(g.combo>=3||g.rush>0)text("SMASH RUSH!",495,825,11,C.accent,"center",980);
+  text(`抜いた ${g.removed}/6　COMBO ×${g.combo}　ミス ${g.misses}/3`,495,870,5.5,C.cool,"center",900);
 }
 
 function drawArcade15(){
@@ -8981,14 +9110,35 @@ function circleRectHit(cx,cy,r,q){
   return dx*dx+dy*dy<=r*r;
 }
 
+function arcadeHaptic(pattern=8){
+  try{
+    if(navigator && typeof navigator.vibrate==="function")navigator.vibrate(pattern);
+  }catch(_){}
+}
+function arcadeSnapMove(value,dir,speed,dt,min,max){
+  return clamp(value+dir*speed*dt,min,max);
+}
+function arcadeBalancedColor(g){
+  if(!Array.isArray(g.colorBag)||g.colorBag.length===0){
+    g.colorBag=[0,1,2,3,0,1,2,3];
+    // deterministic shuffle per piece serial keeps saves/retries readable
+    for(let i=g.colorBag.length-1;i>0;i--){
+      const j=(g.serial*7+i*3)% (i+1);
+      const t=g.colorBag[i];g.colorBag[i]=g.colorBag[j];g.colorBag[j]=t;
+    }
+  }
+  return g.colorBag.pop();
+}
+
 function updateBreakoutPhysics(dt,now){
   const b=bonusGame.ball;
   const dir=(rightDown?1:0)-(leftDown?1:0);
 
-  bonusGame.paddleV=lerp(bonusGame.paddleV,dir*620,clamp(dt*14,0,1));
+  // Breakout OSS feel pass: immediate paddle intent, no eased steering delay.
+  bonusGame.paddleV=dir*(now<bonusGame.feverUntil?780:710);
   bonusGame.paddleX=clamp(bonusGame.paddleX+bonusGame.paddleV*dt,250,740);
 
-  const targetSpeed=430+bonusGame.broken*3.2+(state.game==="B"?45:0)+song.bonusTier*14;
+  const targetSpeed=470+bonusGame.broken*3.8+(state.game==="B"?50:0)+song.bonusTier*15;
   b.x+=b.vx*dt;b.y+=b.vy*dt;
 
   if(b.x<215+b.r){b.x=215+b.r;b.vx=Math.abs(b.vx)}
@@ -9011,9 +9161,11 @@ function updateBreakoutPhysics(dt,now){
      b.x<=bonusGame.paddleX+bonusGame.paddleW*.56+b.r){
     const rel=clamp((b.x-bonusGame.paddleX)/(bonusGame.paddleW*.5),-1,1);
     b.y=py-10-b.r;
-    const angle=rel*.88;
-    b.vx=Math.sin(angle)*targetSpeed+bonusGame.paddleV*.16;
+    const angle=rel*1.02;
+    // Contact position and paddle motion both visibly steer the next shot.
+    b.vx=Math.sin(angle)*targetSpeed+bonusGame.paddleV*.28;
     b.vy=-Math.cos(angle)*targetSpeed;
+    arcadeHaptic(6);
     if(Math.abs(b.vy)<250)b.vy=-250;
   }
 
@@ -10489,6 +10641,100 @@ if(new URLSearchParams(location.search).has("autotest")){
 if(new URLSearchParams(location.search).has("batchtest")){
   const result=runQualitySuite(8,90);
   document.body.innerHTML=`<pre id="batch">${JSON.stringify(result.summary,null,2)}</pre>`;
+}
+
+if(new URLSearchParams(location.search).has("v27smoke")){
+  setTimeout(()=>{
+    const result={ok:true,tests:{},errors:[]};
+    const run=(name,fn)=>{
+      try{fn();result.tests[name]="PASS"}
+      catch(err){result.ok=false;result.tests[name]="FAIL";result.errors.push(name+": "+String(err&&err.stack||err))}
+    };
+    const savedMode=state.mode,savedStage=bonusGame.stage,savedActive=ARCADE15.active,savedG=ARCADE15.g;
+    const savedLeft=leftDown,savedRight=rightDown,savedAD=arcadeActionDown;
+    try{
+      state.mode=MODE.BONUS;bonusGame.stage="AR15";
+
+      run("SHOOTER",()=>{
+        const g=shooterInit();ARCADE15.active="SHOOTER";ARCADE15.g=g;
+        arcadeActionDown=true;
+        for(let i=0;i<180;i++){shooterUpdate(g,1/240,1000+i*4);arcadeActionPressed=false}
+        arcadeActionDown=false;
+        if(!Array.isArray(g.bullets)||!Array.isArray(g.enemies))throw new Error("bad shooter arrays");
+      });
+
+      run("DROP",()=>{
+        const g=dropInit();ARCADE15.active="DROP";ARCADE15.g=g;
+        for(let i=0;i<240;i++){
+          leftDown=(i%80)<16;rightDown=(i%80)>=40&&(i%80)<56;
+          arcadeActionDown=(i%90)>60;
+          arcadeActionPressed=i%90===61;
+          arcadeLeftPressed=i%80===0;arcadeRightPressed=i%80===40;
+          dropUpdate(g,1/240,2000+i*4);
+          arcadeLeftPressed=arcadeRightPressed=arcadeActionPressed=false;
+        }
+        if(!g.piece||!Array.isArray(g.board))throw new Error("drop state missing");
+      });
+
+      run("MOLE",()=>{
+        const g=moleInit();ARCADE15.active="MOLE";ARCADE15.g=g;
+        moleSpawn(g,3000);
+        const lane=g.holes.findIndex(h=>h.t>0);
+        if(lane<0)throw new Error("no mole spawned");
+        moleWhack(g,lane,3100);
+        for(let i=0;i<120;i++)moleUpdate(g,1/240,3100+i*4);
+      });
+
+      run("HOMERUN",()=>{
+        const g=homerunInit();ARCADE15.active="HOMERUN";ARCADE15.g=g;
+        homerunSpawnPitch(g,4000);
+        g.x=g.pitch.baseX;g.pitch.y=645;g.pitch.x=g.x;g.swingBuffer=.1;
+        homerunUpdate(g,1/240,4100);
+        if(g.homeRuns<1)throw new Error("buffered swing did not resolve");
+      });
+
+      run("GOLDFISH",()=>{
+        const g=goldfishInit();ARCADE15.active="GOLDFISH";ARCADE15.g=g;
+        g.x=495;
+        g.fish[0].x=490;g.fish[0].y=565;g.fish[0].baseY=565;
+        g.scoopT=.24;g.scoopResolved=false;
+        goldfishResolveScoop(g,5000);
+        if(g.caught<1)throw new Error("scoop did not catch");
+      });
+
+      run("CRANE",()=>{
+        const g=craneInit();ARCADE15.active="CRANE";ARCADE15.g=g;
+        g.x=g.prizes[0].x;arcadeActionPressed=true;
+        craneUpdate(g,1/60,6000);arcadeActionPressed=false;
+        for(let i=0;i<180;i++)craneUpdate(g,1/120,6000+i*8);
+        if(g.mode!=="MOVE"&&g.mode!=="UP")throw new Error("crane state stuck "+g.mode);
+      });
+
+      run("DARUMA",()=>{
+        const g=darumaInit();ARCADE15.active="DARUMA";ARCADE15.g=g;
+        g.phase=Math.PI/2;
+        const side=darumaTargetSide(g);
+        darumaStrike(g,7000,side);
+        if(g.removed<1)throw new Error("daruma correct strike failed");
+        for(let i=0;i<120;i++)darumaUpdate(g,1/240,7000+i*4);
+      });
+
+      run("DRAW",()=>{
+        drawShooter(shooterInit());
+        drawDrop(dropInit());
+        drawMole(moleInit());
+        drawHomerun(homerunInit());
+        drawGoldfish(goldfishInit());
+        drawCrane(craneInit());
+        drawDaruma(darumaInit());
+      });
+    }finally{
+      leftDown=savedLeft;rightDown=savedRight;arcadeActionDown=savedAD;
+      arcadeLeftPressed=arcadeRightPressed=arcadeActionPressed=false;
+      state.mode=savedMode;bonusGame.stage=savedStage;ARCADE15.active=savedActive;ARCADE15.g=savedG;
+    }
+    document.body.innerHTML=`<pre id="v27smoke">${JSON.stringify(result,null,2)}</pre>`;
+  },150);
 }
 })();
 
@@ -12317,4 +12563,46 @@ V26.1 / CENTERED FULL-VIEWPORT RENDER FIX
 - 960×900 world stays centered at the largest uncropped scale
 - ResizeObserver watches both shell and canvas
 - orientation change performs a fast and a delayed viewport recalculation
+-->
+
+<!--
+V27 / OSS ARCADE FEEL REBUILD
+
+This single-file build remains self-contained. No remote runtime dependencies.
+
+Open-source implementation references used for timing/control/game-feel study
+and then rewritten for this game's own state model, art, audio and save system:
+
+1) Jake Gordon — javascript-tetris — MIT
+   https://github.com/jakesgordon/javascript-tetris
+   Studied: requestAnimationFrame delta handling, queued actions,
+   speed progression, collision-valid move/rotate/drop structure.
+
+2) Christopher Scott Hernandez — whackamole — MIT
+   https://github.com/christopherscott/whackamole
+   Studied: explicit live/dead/main step states, reaction-time scoring,
+   immediate step-forward after a successful hit.
+
+3) Dave Kerr — spaceinvaders — MIT
+   https://github.com/dwmkerr/spaceinvaders
+   Studied: direct ship speed, fire-rate cap, formation direction reversal/drop,
+   enemy acceleration as the formation thins.
+
+4) pyforgedev — flappy-bird — MIT
+   https://github.com/pyforgedev/flappy-bird
+   Studied: delta-time-scaled motion, immediate impulse input,
+   fair progressive difficulty and anti-miss input timing.
+
+5) Sithumsankajith — breakout-web-game — MIT
+   https://github.com/Sithumsankajith/breakout-web-game
+   Studied: axis-aware collision response and immediate paddle movement.
+
+V27 FEEL RULES:
+- no cosmetic easing between input and avatar motion unless it is the mechanic
+- actions buffer briefly instead of disappearing between fixed updates
+- repeated movement uses DAS/ARR where grid play needs it
+- success resolves quickly; long empty animations removed
+- difficulty increases through speed/spacing, not new rules
+- touch zones are the action itself where possible
+- every success produces immediate visual + musical + optional haptic response
 -->
