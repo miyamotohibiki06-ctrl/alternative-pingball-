@@ -112,11 +112,389 @@ canvas{
 @supports(height:100dvh){
   #shell{height:100dvh}
 }
+
+/* ============================================================
+   V28 SMARTPHONE-NATIVE VISUAL
+   A phone is not a small desktop. Portrait phones get a dedicated
+   vertical machine composition; no empty letterbox is left undesigned.
+   ============================================================ */
+#mobileChrome{display:none;pointer-events:none}
+#mobileTop,#mobileBottom,#mobileTouchEcho{pointer-events:none}
+
+@media (orientation:portrait) and (max-width:700px){
+  :root{
+    --phoneTop:clamp(82px,14dvh,128px);
+    --phoneFieldH:93.75vw;
+    --phoneAccent:#ff6b3b;
+  }
+
+  html,body,#shell{
+    width:100vw;
+    height:100dvh;
+    min-height:100dvh;
+    background:#050608;
+  }
+
+  #shell{
+    background:
+      radial-gradient(circle at 50% 23%,rgba(102,200,191,.09),transparent 34%),
+      radial-gradient(circle at 50% 82%,rgba(255,107,59,.08),transparent 40%),
+      #050608;
+  }
+
+  /* Exact 960:900 pane, edge-to-edge horizontally. */
+  canvas{
+    left:0;
+    right:auto;
+    top:var(--phoneTop);
+    bottom:auto;
+    width:100vw;
+    height:var(--phoneFieldH);
+    left:0;
+    transform:none;
+    background:#080b0c;
+    border-top:1px solid rgba(238,241,232,.12);
+    border-bottom:1px solid rgba(238,241,232,.12);
+  }
+
+  #mobileChrome{
+    display:block;
+    position:absolute;
+    inset:0;
+    z-index:7;
+    overflow:hidden;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+
+  #mobileChrome:before{
+    content:"";
+    position:absolute;
+    inset:0;
+    opacity:.17;
+    background:
+      repeating-linear-gradient(0deg,transparent 0 3px,rgba(255,255,255,.025) 3px 4px),
+      linear-gradient(90deg,rgba(102,200,191,.04),transparent 28%,transparent 72%,rgba(255,107,59,.04));
+    mix-blend-mode:screen;
+  }
+
+  #mobileTop{
+    position:absolute;
+    z-index:2;
+    top:0;left:0;right:0;
+    height:var(--phoneTop);
+    padding:
+      max(12px,env(safe-area-inset-top))
+      max(16px,env(safe-area-inset-right))
+      9px
+      max(16px,env(safe-area-inset-left));
+    display:flex;
+    flex-direction:column;
+    justify-content:flex-end;
+    gap:8px;
+    background:
+      linear-gradient(180deg,rgba(5,6,8,.98),rgba(8,11,12,.95)),
+      #050608;
+  }
+
+  .mobileBrand{
+    position:absolute;
+    top:max(11px,env(safe-area-inset-top));
+    left:max(16px,env(safe-area-inset-left));
+    font-size:9px;
+    font-weight:900;
+    letter-spacing:.22em;
+    color:rgba(238,241,232,.64);
+  }
+  .mobileBrand b{color:var(--accent);font-weight:950}
+
+  .mobileTopGrid{
+    display:grid;
+    grid-template-columns:1fr 1.15fr .85fr;
+    gap:14px;
+    align-items:end;
+  }
+  .mobileTopGrid div{
+    min-width:0;
+    border-left:1px solid rgba(238,241,232,.14);
+    padding-left:8px;
+  }
+  .mobileTopGrid small,
+  .mobileRoleRow small{
+    display:block;
+    font-size:7px;
+    letter-spacing:.19em;
+    color:rgba(238,241,232,.36);
+    margin-bottom:3px;
+  }
+  .mobileTopGrid strong{
+    display:block;
+    overflow:hidden;
+    white-space:nowrap;
+    text-overflow:ellipsis;
+    font-size:clamp(10px,3vw,13px);
+    letter-spacing:.05em;
+    color:var(--paper);
+  }
+  #mHudScore{color:var(--accent)}
+
+  .mobileProgress{
+    height:3px;
+    background:rgba(238,241,232,.08);
+    overflow:hidden;
+  }
+  .mobileProgress i{
+    display:block;
+    height:100%;
+    width:0%;
+    background:linear-gradient(90deg,var(--cool),var(--accent));
+    box-shadow:0 0 12px rgba(255,107,59,.55);
+    transition:width .18s linear;
+  }
+
+  #mobileBottom{
+    position:absolute;
+    z-index:2;
+    left:0;right:0;
+    top:calc(var(--phoneTop) + var(--phoneFieldH));
+    bottom:0;
+    min-height:0;
+    padding:
+      18px
+      max(16px,env(safe-area-inset-right))
+      max(12px,env(safe-area-inset-bottom))
+      max(16px,env(safe-area-inset-left));
+    display:grid;
+    grid-template-rows:minmax(45px,1fr) auto auto auto;
+    gap:11px;
+    background:
+      linear-gradient(180deg,rgba(5,6,8,.94),rgba(5,6,8,1) 38%),
+      repeating-linear-gradient(90deg,transparent 0 27px,rgba(238,241,232,.025) 27px 28px);
+    border-top:1px solid rgba(238,241,232,.08);
+  }
+
+  .mobileWave{
+    min-height:42px;
+    display:flex;
+    align-items:center;
+    gap:3px;
+    overflow:hidden;
+    opacity:.9;
+  }
+  .mobileWave i{
+    display:block;
+    flex:1 1 0;
+    min-width:2px;
+    height:100%;
+    max-height:72px;
+    transform:scaleY(.08);
+    transform-origin:center;
+    background:linear-gradient(180deg,var(--cool),var(--accent));
+    opacity:.45;
+    transition:transform .07s linear,opacity .08s linear;
+    box-shadow:0 0 10px rgba(102,200,191,.10);
+  }
+
+  .mobileRoleRow{
+    border-top:1px solid rgba(238,241,232,.11);
+    padding-top:10px;
+  }
+  .mobileRoleRow strong{
+    display:block;
+    font-size:clamp(14px,4.8vw,21px);
+    line-height:1;
+    letter-spacing:-.03em;
+    color:var(--paper);
+  }
+
+  .mobileDNA{
+    display:grid;
+    grid-template-columns:repeat(5,1fr);
+    gap:4px;
+  }
+  .mobileDNA span{
+    border:1px solid rgba(238,241,232,.08);
+    min-width:0;
+    padding:5px 2px;
+    text-align:center;
+    font-size:6px;
+    letter-spacing:.08em;
+    color:rgba(238,241,232,.24);
+    transition:color .15s,border-color .15s,background .15s;
+  }
+  .mobileDNA span.on{
+    color:var(--paper);
+    border-color:rgba(255,107,59,.45);
+    background:rgba(255,107,59,.09);
+    box-shadow:inset 0 0 15px rgba(255,107,59,.05);
+  }
+
+  .mobileFooter{
+    display:flex;
+    justify-content:space-between;
+    gap:10px;
+    border-top:1px solid rgba(238,241,232,.08);
+    padding-top:8px;
+    font-size:6.5px;
+    letter-spacing:.12em;
+    color:rgba(238,241,232,.30);
+  }
+
+  /* Not a controller: zones are invisible except for a 90ms response flash. */
+  #mobileTouchEcho{
+    position:absolute;
+    z-index:3;
+    inset:0;
+    display:grid;
+    grid-template-columns:34% 32% 34%;
+  }
+  #mobileTouchEcho i{
+    opacity:0;
+    transition:opacity .09s linear;
+  }
+  #mobileTouchEcho i.hot{
+    opacity:1;
+    background:linear-gradient(180deg,transparent 25%,rgba(255,255,255,.025),rgba(255,107,59,.075),transparent 92%);
+  }
+  #mobileTouchEcho i[data-zone="action"].hot{
+    background:linear-gradient(180deg,transparent 25%,rgba(102,200,191,.07),transparent 92%);
+  }
+
+  /* Phone title is intentionally a different composition from desktop. */
+  #title{
+    padding:max(20px,env(safe-area-inset-top)) 22px max(20px,env(safe-area-inset-bottom));
+    background:
+      radial-gradient(circle at 74% 23%,rgba(255,107,59,.18),transparent 26%),
+      radial-gradient(circle at 25% 72%,rgba(102,200,191,.12),transparent 34%),
+      repeating-linear-gradient(0deg,transparent 0 4px,rgba(255,255,255,.018) 4px 5px),
+      #050608;
+  }
+  #title:before{
+    content:"";
+    position:absolute;
+    width:58vw;height:58vw;
+    right:-17vw;top:10vh;
+    border:1px solid rgba(255,107,59,.22);
+    border-radius:50%;
+    box-shadow:
+      0 0 0 8vw rgba(255,107,59,.018),
+      0 0 0 16vw rgba(102,200,191,.018);
+  }
+  #titleInner{
+    width:100%;
+    height:100%;
+    position:relative;
+    z-index:1;
+    display:flex;
+    flex-direction:column;
+    justify-content:space-between;
+    align-items:stretch;
+    gap:0;
+    padding-top:10vh;
+    padding-bottom:5vh;
+  }
+  #titleInner>div:first-child{align-self:flex-start}
+  #titleInner>div:last-child{width:100%;align-self:flex-end}
+  .logo{
+    font-size:clamp(62px,19vw,98px);
+    line-height:.72;
+    letter-spacing:-.085em;
+  }
+  .kicker{
+    margin-top:24px;
+    padding-left:10px;
+    max-width:76vw;
+    font-size:7px;
+    line-height:1.8;
+    letter-spacing:.17em;
+  }
+  .menu{
+    width:100%;
+    font-size:clamp(13px,4vw,17px);
+    line-height:1.2;
+    letter-spacing:.13em;
+  }
+  .menu>div{
+    padding:18px 2px;
+    border-top:1px solid rgba(238,241,232,.13);
+  }
+  .menu>div:last-child{border-bottom:1px solid rgba(238,241,232,.13)}
+  .menu>div.on:before{content:"●  "}
+  .prompt{
+    margin-top:12px;
+    font-size:7px;
+    letter-spacing:.12em;
+  }
+  #saveTools{margin-top:12px!important}
+}
+
+/* Phone landscape gets dedicated side information rails instead of blank bars. */
+@media (orientation:landscape) and (pointer:coarse) and (max-height:600px){
+  #mobileChrome{display:block;position:absolute;inset:0;z-index:7;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  #mobileTop{
+    position:absolute;left:0;top:0;bottom:0;width:12vw;
+    padding:max(10px,env(safe-area-inset-top)) 8px max(10px,env(safe-area-inset-bottom));
+    display:flex;flex-direction:column;justify-content:space-between;
+    background:linear-gradient(90deg,#050608,rgba(5,6,8,.88));
+  }
+  .mobileBrand{position:static;font-size:7px;line-height:1.7}
+  .mobileTopGrid{display:flex;flex-direction:column;gap:9px}
+  .mobileTopGrid small{font-size:5px}.mobileTopGrid strong{font-size:8px}
+  .mobileProgress{height:2px}
+  #mobileBottom{
+    position:absolute;right:0;top:0;bottom:0;width:12vw;
+    padding:max(10px,env(safe-area-inset-top)) 8px max(10px,env(safe-area-inset-bottom));
+    display:flex;flex-direction:column;justify-content:center;gap:10px;
+    background:linear-gradient(270deg,#050608,rgba(5,6,8,.88));
+  }
+  .mobileWave{height:36%;gap:2px}.mobileWave i:nth-child(n+9){display:none}
+  .mobileRoleRow strong{font-size:8px;word-break:break-all}.mobileRoleRow small{font-size:5px}
+  .mobileDNA{grid-template-columns:1fr 1fr}.mobileDNA span{font-size:4px;padding:3px 1px}
+  .mobileFooter{display:none}
+  #mobileTouchEcho{display:none}
+}
+
 </style>
 </head>
 <body>
 <div id="shell">
   <canvas id="c"></canvas>
+
+  <div id="mobileChrome" aria-hidden="true">
+    <div id="mobileTop">
+      <div class="mobileBrand">PINBALL <b>SYNTH</b></div>
+      <div class="mobileTopGrid">
+        <div><small>MODE</small><strong id="mHudMode">PINBALL</strong></div>
+        <div><small>SCORE</small><strong id="mHudScore">0000000</strong></div>
+        <div><small>ARRANGE</small><strong id="mHudArrange">0 / 10</strong></div>
+      </div>
+      <div class="mobileProgress"><i id="mHudProgress"></i></div>
+    </div>
+
+    <div id="mobileBottom">
+      <div class="mobileWave" id="mobileWave">
+        <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+        <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+        <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+      </div>
+      <div class="mobileRoleRow">
+        <small>NOW PLAYING / LAYER</small>
+        <strong id="mHudRole">AMBIENT ONLY</strong>
+      </div>
+      <div class="mobileDNA">
+        <span>DRUM</span><span>ACID</span><span>CHIP</span><span>LEAD</span><span>PAD</span>
+        <span>PERC</span><span>BASS</span><span>AIR</span><span>HOOK</span><span>FILL</span>
+      </div>
+      <div class="mobileFooter">
+        <span id="mHudStage">STAGE 1 / 10</span>
+        <span>DIRECT TOUCH SURFACE</span>
+      </div>
+    </div>
+
+    <div id="mobileTouchEcho">
+      <i data-zone="left"></i><i data-zone="action"></i><i data-zone="right"></i>
+    </div>
+  </div>
+
   <div id="title">
     <div id="titleInner">
       <div>
@@ -129,17 +507,16 @@ canvas{
       </div>
       <div>
         <div class="menu" id="titleMenu">
-          <div id="mContinue" class="on">CONTINUE</div>
-          <div id="mNewA">NEW GAME A / NORMAL</div>
-          <div id="mNewB">NEW GAME B / HARD</div>
+          <div id="mContinue" style="display:none">CONTINUE</div>
+          <div id="mNewA">NEW GAME</div>
         </div>
-        <div id="saveInfo" class="prompt">SAVE — CHECKING...</div>
-        <div id="saveTools" class="prompt" style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
+        <div id="saveInfo" class="prompt" style="display:none"></div>
+        <div id="saveTools" class="prompt" style="display:none;gap:10px;flex-wrap:wrap;margin-top:10px">
           <button id="saveBackup" type="button" style="font:inherit;color:inherit;background:transparent;border:1px solid currentColor;padding:7px 10px;cursor:pointer">SAVE BACKUP</button>
           <button id="loadBackup" type="button" style="font:inherit;color:inherit;background:transparent;border:1px solid currentColor;padding:7px 10px;cursor:pointer">LOAD BACKUP</button>
           <input id="saveFileInput" type="file" accept="application/json,.json" hidden>
         </div>
-        <div class="prompt">TAP MENU — START<br>KEYBOARD: A / D + SPACE<br><br>TOUCH SCREEN<br>LEFT THIRD = LEFT　CENTER = ACTION　RIGHT THIRD = RIGHT</div>
+        <div id="titleHint" class="prompt">TAP NEW GAME</div>
       </div>
     </div>
   </div>
@@ -172,11 +549,15 @@ function resize(){
   canvas.width=Math.max(1,Math.round(r.width*dpr));
   canvas.height=Math.max(1,Math.round(r.height*dpr));
 
-  // Largest possible uncropped 16:15 playfield inside the physical screen.
-  // The canvas itself still fills the entire phone/tablet viewport.
+  // Phone portrait CSS gives the canvas an exact 16:15 box, so offsets become zero.
+  // Desktop/tablet still use uncropped contain scaling.
   scale=Math.min(r.width/WORLD.w,r.height/WORLD.h);
   worldOffsetX=(r.width-WORLD.w*scale)*.5;
   worldOffsetY=(r.height-WORLD.h*scale)*.5;
+  if(matchMedia("(orientation:portrait) and (max-width:700px)").matches){
+    worldOffsetX=0;
+    worldOffsetY=0;
+  }
   ctx.setTransform(
     scale*dpr,0,0,scale*dpr,
     worldOffsetX*dpr,worldOffsetY*dpr
@@ -568,7 +949,7 @@ const MINI_SAVE_KEY="pinballSynthMiniGameV8";
 
 function defaultMiniSave(){
   return {
-    version:19,
+    version:20,
     stage:"BREAKOUT",
     gameMode:"A",
     brokenMask:0,
@@ -618,7 +999,7 @@ function loadMiniSave(){
     // V25: the removed legacy ending system was removed entirely.
     delete miniSave.legacyPointsRemoved;
     delete miniSave.legacyReadRemoved;
-    miniSave.version=19;
+    miniSave.version=20;
   }catch(_){
     miniSave=defaultMiniSave();
   }
@@ -9853,6 +10234,70 @@ function overlay(now){
   }else if(state.lastSkill&&now-state.lastCollision<900)text(`SKILL ${state.lastSkill}`,885,110,7,C.accent,"right");
   if(state.mult>1)text(`${state.lastShot}  ×${state.mult}`,885,132,7,C.accent,"right");
 }
+const mobileUI={
+  root:$("#mobileChrome"),
+  mode:$("#mHudMode"),score:$("#mHudScore"),arrange:$("#mHudArrange"),
+  progress:$("#mHudProgress"),role:$("#mHudRole"),stage:$("#mHudStage"),
+  bars:Array.from(document.querySelectorAll("#mobileWave i")),
+  dna:Array.from(document.querySelectorAll(".mobileDNA span")),
+  echoes:{
+    left:document.querySelector('#mobileTouchEcho i[data-zone="left"]'),
+    action:document.querySelector('#mobileTouchEcho i[data-zone="action"]'),
+    right:document.querySelector('#mobileTouchEcho i[data-zone="right"]')
+  },
+  lastUpdate:0
+};
+function mobileVisualActive(){
+  return matchMedia("(orientation:portrait) and (max-width:700px)").matches ||
+         matchMedia("(orientation:landscape) and (pointer:coarse) and (max-height:600px)").matches;
+}
+function updateMobileChrome(now){
+  if(!mobileUI.root||!mobileVisualActive())return;
+
+  if(now-mobileUI.lastUpdate>55){
+    mobileUI.lastUpdate=now;
+    const stage=clamp(miniSave.storyStage|0,0,STORY_STAGES.length);
+    const def=currentStoryDef?.();
+    const modeText=state.mode===MODE.BONUS
+      ? (def?.name||"MINIGAME")
+      : state.screen===SCREEN.UPPER?"UPPER / SYNTH":"LOWER / PINBALL";
+    mobileUI.mode.textContent=modeText;
+    mobileUI.score.textContent=String(state.score|0).padStart(7,"0");
+    mobileUI.arrange.textContent=`${miniMusicCount()} / 10`;
+    mobileUI.role.textContent=miniSave.lastMusicRole||"AMBIENT ONLY";
+    mobileUI.stage.textContent=stage>=STORY_STAGES.length
+      ?"ALL STAGES CLEAR"
+      :`STAGE ${stage+1} / ${STORY_STAGES.length}`;
+
+    const p=stage>=STORY_STAGES.length?1:(stage/Math.max(1,STORY_STAGES.length));
+    mobileUI.progress.style.width=`${Math.round(p*100)}%`;
+
+    const mask=(song.miniMusicMask|0)&0x3ff;
+    mobileUI.dna.forEach((el,i)=>el.classList.toggle("on",!!(mask&(1<<i))));
+
+    const energy=clamp(
+      .12+
+      (state.tension||0)*.32+
+      (state.density||0)*.28+
+      (song.dataBurst||0)*.22+
+      (song.twPleasureCharge||0)*.18,
+      .08,1
+    );
+    mobileUI.bars.forEach((bar,i)=>{
+      const wave=.28+.72*Math.abs(Math.sin(now*.0032+i*.61+song.step*.19));
+      const beat=(i%4===song.step%4)?1.18:1;
+      const h=clamp(.08+energy*wave*beat,.08,1);
+      bar.style.transform=`scaleY(${h.toFixed(3)})`;
+      bar.style.opacity=(.22+h*.74).toFixed(2);
+    });
+  }
+
+  for(const zone of ["left","action","right"]){
+    const el=mobileUI.echoes[zone];
+    if(el)el.classList.toggle("hot",now<mobileTouchUntil[zone]);
+  }
+}
+
 function render(now){
   // Paint the complete physical viewport first, then center the fixed 960×900 world.
   // This keeps the browser/controller chrome gone without stretching pinball geometry.
@@ -9885,11 +10330,12 @@ function render(now){
 
   ctx.restore();
   drawJuice();
+  updateMobileChrome(now);
 }
 
 /* ---------------- INPUT / LOOP ---------------- */
 let menu=0;
-let titleOptions=["CONTINUE","NEW_A","NEW_B"];
+let titleOptions=["CONTINUE","NEW_A"];
 
 function titleHasSave(){
   try{
@@ -9928,22 +10374,38 @@ function menuRender(){
   const has=titleHasSave();
   loadMiniSave();
 
-  $("#mContinue").classList.toggle("on",menu===0);
-  $("#mNewA").classList.toggle("on",menu===1);
-  $("#mNewB").classList.toggle("on",menu===2);
+  const cont=$("#mContinue"),newGame=$("#mNewA");
+  const saveInfo=$("#saveInfo"),saveTools=$("#saveTools"),hint=$("#titleHint");
 
-  $("#mContinue").classList.toggle("disabled",!has);
+  // First-time player: one decision only.
+  // No CONTINUE, no difficulty selector, no save utilities, no empty-save copy.
+  if(!has){
+    menu=1;
+    cont.style.display="none";
+    newGame.style.display="block";
+    newGame.classList.add("on");
+    cont.classList.remove("on");
+    if(saveInfo)saveInfo.style.display="none";
+    if(saveTools)saveTools.style.display="none";
+    if(hint){hint.style.display="block";hint.textContent="TAP NEW GAME";}
+    return;
+  }
+
+  cont.style.display="block";
+  newGame.style.display="block";
+  if(menu!==0&&menu!==1)menu=0;
+  cont.classList.toggle("on",menu===0);
+  newGame.classList.toggle("on",menu===1);
+  if(saveInfo)saveInfo.style.display="block";
+  if(saveTools)saveTools.style.display="flex";
+  if(hint){hint.style.display="block";hint.textContent="CONTINUE / NEW GAME";}
   renderSaveInfo();
 }
 
 function selectTitle(delta){
-  loadMiniSave();
-  let next=menu;
-  for(let i=0;i<3;i++){
-    next=(next+delta+3)%3;
-    if(next===0&&!titleHasSave())continue;
-    menu=next;break;
-  }
+  const has=titleHasSave();
+  if(!has){menu=1;menuRender();return}
+  menu=(menu+delta+2)%2;
   menuRender();
 }
 
@@ -10071,7 +10533,6 @@ addEventListener("blur",()=>{
 });
 $("#mContinue").addEventListener("click",e=>{e.stopPropagation();if(titleHasSave()){menu=0;menuRender();startGame("CONTINUE")}});
 $("#mNewA").addEventListener("click",e=>{e.stopPropagation();menu=1;menuRender();startGame("NEW_A")});
-$("#mNewB").addEventListener("click",e=>{e.stopPropagation();menu=2;menuRender();startGame("NEW_B")});
 
 function exportMiniSaveBackup(){
   loadMiniSave();
@@ -10141,15 +10602,18 @@ function tryImmersiveFullscreen(){
 }
 
 function screenZoneFromPointer(e){
-  const r=canvas.getBoundingClientRect();
+  const r=shell.getBoundingClientRect();
   const x=clamp((e.clientX-r.left)/Math.max(1,r.width),0,1);
   if(x<.34)return "left";
   if(x>.66)return "right";
   return "action";
 }
 
+const mobileTouchUntil={left:0,action:0,right:0};
 function screenZoneOn(zone){
+  if(state.mode===MODE.TITLE)return;
   screenZoneCounts[zone]++;
+  mobileTouchUntil[zone]=nowMs()+110;
   if(screenZoneCounts[zone]>1)return;
 
   if(zone==="left"){
@@ -10205,17 +10669,18 @@ function screenZoneOff(zone){
   }
 }
 
-canvas.addEventListener("pointerdown",e=>{
-  // Mouse remains usable for desktop testing; touch/pen get identical behavior.
+shell.addEventListener("pointerdown",e=>{
+  // Title/menu owns its own pointer interactions.
+  if(state.mode===MODE.TITLE)return;
   e.preventDefault();
   tryImmersiveFullscreen();
   const zone=screenZoneFromPointer(e);
   screenPointers.set(e.pointerId,zone);
   screenZoneOn(zone);
-  try{canvas.setPointerCapture(e.pointerId)}catch(_){}
+  try{shell.setPointerCapture(e.pointerId)}catch(_){}
 },{passive:false});
 
-canvas.addEventListener("pointermove",e=>{
+shell.addEventListener("pointermove",e=>{
   if(!screenPointers.has(e.pointerId))return;
   e.preventDefault();
   const oldZone=screenPointers.get(e.pointerId);
@@ -10234,7 +10699,7 @@ function releaseScreenPointer(e){
   screenZoneOff(zone);
 }
 ["pointerup","pointercancel","lostpointercapture"].forEach(ev=>
-  canvas.addEventListener(ev,releaseScreenPointer,{passive:false})
+  shell.addEventListener(ev,releaseScreenPointer,{passive:false})
 );
 
 function clearDirectTouch(){
@@ -12605,4 +13070,41 @@ V27 FEEL RULES:
 - difficulty increases through speed/spacing, not new rules
 - touch zones are the action itself where possible
 - every success produces immediate visual + musical + optional haptic response
+-->
+
+<!--
+V28 / SMARTPHONE-NATIVE VISUAL + FIRST-RUN MENU
+
+FIRST RUN
+- no save: title menu displays only "NEW GAME"
+- no CONTINUE
+- no NORMAL/HARD choice
+- no SAVE EMPTY copy
+- no backup/import tools
+- NEW GAME always starts normal Game A
+- once a real save exists, title becomes CONTINUE / NEW GAME
+- old Game B saves still continue in Game B
+
+SMARTPHONE PORTRAIT
+- no more desktop canvas floating in unused black space
+- dedicated vertical machine composition
+- top module: MODE / SCORE / ARRANGEMENT
+- middle module: exact 960:900 playfield, edge-to-edge at 100vw × 93.75vw
+- bottom module: live waveform, current musical layer, 10-part song DNA and story progress
+- the entire viewport is visually designed
+- game geometry is never stretched
+- no visible controller
+- entire shell remains the direct three-zone touch surface
+- touch input receives only a transient glow, not permanent buttons
+
+SMARTPHONE LANDSCAPE
+- left/right information rails fill the areas outside the uncropped game world
+-->
+
+<!--
+V28.1 FIRST-PAINT CLEANUP
+- CONTINUE and save utilities start hidden in HTML before JavaScript runs
+- first-time users never see a one-frame SAVE CHECKING flash
+- very short portrait screens preserve a usable lower visual module
+- ordinary modern phones still render the playfield at full 100vw width
 -->
