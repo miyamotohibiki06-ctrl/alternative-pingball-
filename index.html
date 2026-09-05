@@ -2753,12 +2753,13 @@ function scheduleSpectacleBody(step,bar,whenMs,snap){
   const root=chordTone(0,1,snap),fifth=chordTone(4,1,snap),third=chordTone(2,2,snap);
 
   // Low-mid mass: octave root + fifth. Sustained, not a new rhythmic pattern.
-  warmVoiceSemi(root-12,.018+.030*s,1.25+s*.70,-.22,-.24,whenMs);
-  warmVoiceSemi(fifth-12,.013+.022*s,1.10+s*.55,.22,-.22,whenMs+18);
+  warmVoiceSemi(root-12,.024+.036*s,1.45+s*.80,-.24,-.28,whenMs);
+  warmVoiceSemi(fifth-12,.018+.028*s,1.30+s*.62,.24,-.26,whenMs+18);
+  warmVoiceSemi(root,.014+.020*s,1.18+s*.45,0,-.22,whenMs+36);
 
   if(s>.52){
     warmVoiceSemi(root,.018+.020*s,1.45,.0,-.15,whenMs+32);
-    deepSubHit(43,.065+.075*s,whenMs+.04,.48+s*.22);
+    deepSubHit(42,.085+.090*s,whenMs+.04,.52+s*.24);
   }
   if(s>.72){
     ambientGlassSemi(third+12,.055+.055*s,.44,-.34,whenMs+70,.64+s*.18);
@@ -4263,7 +4264,7 @@ function updateInstrument(dt,now){
   if(bodyBus)bodyBus.gain.setTargetAtTime(.88+spectacle*.34+(song.worldCommitBars>0?.10:0),AC.currentTime,.20);
   if(drumBus)drumBus.gain.setTargetAtTime(1.60+clamp(song.drumBuildActive/6,0,1)*.38+spectacle*.25+(state.mode===MODE.BONUS?.08:0),AC.currentTime,.16);
   if(spaceBus)spaceBus.gain.setTargetAtTime(1.06+spectacle*.18+(song.guidedWorld===1?.05:0)+(song.guidedWorld===2?.08:0),AC.currentTime,.22);
-  if(masterLowShelf)masterLowShelf.gain.setTargetAtTime(2.4+spectacle*4.4+(song.guidedWorld===0?.9:0),AC.currentTime,.24);
+  if(masterLowShelf)masterLowShelf.gain.setTargetAtTime(3.0+spectacle*4.8+(song.guidedWorld===0?1.0:0),AC.currentTime,.24);
   if(masterPresence)masterPresence.gain.setTargetAtTime(1.4+spectacle*3.2+(song.guidedWorld===1?.8:0),AC.currentTime,.18);
   if(masterHighShelf)masterHighShelf.gain.setTargetAtTime(1.8+spectacle*4.2+(song.guidedWorld===2?1.0:0)+(air?.7:0),AC.currentTime,.20);
 
@@ -4423,58 +4424,76 @@ function pointSegmentDistance(px,py,ax,ay,bx,by){
   return {d:Math.hypot(px-x,py-y),x,y,t};
 }
 function upperAssist(o){
-  if(state.screen!==SCREEN.UPPER||ball.phase!==PHASE.FIELD||ball.route)return;
-  const dx=o.x-ball.x,dy=o.y-ball.y,d=Math.hypot(dx,dy)||1;
-  const ar=o.assistR||o.r+58;
-  if(d<=o.hitR+ball.r||d>=ar)return;
-
-  // Predict a short distance ahead. If the trajectory already passes the
-  // bumper's generous halo, gently bend it inward instead of allowing a
-  // visually frustrating near-miss.
-  const look=.055;
-  const fx=ball.x+ball.vx*look,fy=ball.y+ball.vy*look;
-  const fd=Math.hypot(o.x-fx,o.y-fy);
-  const toward=(ball.vx*dx+ball.vy*dy)/d;
-  if(toward<-180&&fd>d)return;
-
-  const q=clamp(1-(d-(o.hitR+ball.r))/(ar-(o.hitR+ball.r)),0,1);
-  const predictive=fd<(o.hitR+ball.r+26)?1:.45;
-  const pull=(58+30*predictive)*q*q;
-  ball.vx+=dx/d*pull;
-  ball.vy+=dy/d*pull;
+  // v17.6: no magnetic correction. The visible circle IS the collision circle.
+  // Reliability comes from continuous collision detection, not invisible attraction.
 }
-function sweptUpperCircle(o,collisionR,re=.94,boost=390){
-  const rr=ball.r+collisionR;
-  const hit=pointSegmentDistance(o.x,o.y,ball.prevX,ball.prevY,ball.x,ball.y);
-  if(hit.d>=rr)return false;
-  // If current position is already inside, normal collision owns it.
-  const curD=Math.hypot(ball.x-o.x,ball.y-o.y);
-  if(curD<rr)return false;
-  let nx=(hit.x-o.x),ny=(hit.y-o.y),nd=Math.hypot(nx,ny);
-  if(nd<.001){nx=-ball.vx;ny=-ball.vy;nd=Math.hypot(nx,ny)||1}
+function sweptCircleTOI(cx,cy,rr,ax,ay,bx,by){
+  const dx=bx-ax,dy=by-ay,fx=ax-cx,fy=ay-cy;
+  const A=dx*dx+dy*dy;
+  if(A<1e-12)return null;
+  const Cq=fx*fx+fy*fy-rr*rr;
+  if(Cq<=0)return 0;
+  const B=2*(fx*dx+fy*dy);
+  const disc=B*B-4*A*Cq;
+  if(disc<0)return null;
+  const s=Math.sqrt(disc);
+  const t1=(-B-s)/(2*A),t2=(-B+s)/(2*A);
+  if(t1>=0&&t1<=1)return t1;
+  if(t2>=0&&t2<=1)return t2;
+  return null;
+}
+function upperCircleContact(o){
+  const rr=ball.r+o.r;
+  const dNow=Math.hypot(ball.x-o.x,ball.y-o.y);
+  if(dNow<=rr+1e-6)return {t:0,inside:true};
+  const t=sweptCircleTOI(o.x,o.y,rr,ball.prevX,ball.prevY,ball.x,ball.y);
+  return t===null?null:{t,inside:false};
+}
+function resolveUpperCircleExact(o,re=.91,radialKick=150){
+  const rr=ball.r+o.r;
+  let hit=upperCircleContact(o);
+  if(!hit)return false;
+
+  let hx,hy;
+  if(hit.inside){
+    let dx=ball.x-o.x,dy=ball.y-o.y,d=Math.hypot(dx,dy);
+    if(d<1e-6){dx=-ball.vx;dy=-ball.vy;d=Math.hypot(dx,dy)||1}
+    hx=o.x+dx/d*rr;hy=o.y+dy/d*rr;
+  }else{
+    hx=ball.prevX+(ball.x-ball.prevX)*hit.t;
+    hy=ball.prevY+(ball.y-ball.prevY)*hit.t;
+  }
+
+  let nx=hx-o.x,ny=hy-o.y,nd=Math.hypot(nx,ny)||1;
   nx/=nd;ny/=nd;
-  ball.x=o.x+nx*(rr+.15);ball.y=o.y+ny*(rr+.15);
+  ball.x=o.x+nx*(rr+.08);ball.y=o.y+ny*(rr+.08);
+
   const vn=ball.vx*nx+ball.vy*ny;
-  if(vn<0){ball.vx-=(1+re)*vn*nx;ball.vy-=(1+re)*vn*ny}
-  ball.vx+=nx*boost;ball.vy+=ny*boost;
-  song.upperSweepHits++;
+  // Only reflect motion entering the circle. Penetration correction alone must not
+  // reverse a ball that is already moving away.
+  if(vn<0){
+    ball.vx-=(1+re)*vn*nx;
+    ball.vy-=(1+re)*vn*ny;
+    const impact=clamp((-vn)/760,.10,1);
+    const kick=radialKick*(.55+.45*impact);
+    ball.vx+=nx*kick;ball.vy+=ny*kick;
+  }
+
+  const cap=state.game==='B'?1160:1030;
+  const sp=Math.hypot(ball.vx,ball.vy);
+  if(sp>cap){const q=cap/sp;ball.vx*=q;ball.vy*=q}
   return true;
 }
 function circleCollideRadius(o,collisionR,re=.82,boost=0){
-  const dx=ball.x-o.x,dy=ball.y-o.y,d=Math.hypot(dx,dy),rr=ball.r+collisionR;
-  if(d>=rr){
-    if(state.screen===SCREEN.UPPER&&sweptUpperCircle(o,collisionR,re,boost))return true;
-    return false;
+  if(state.screen===SCREEN.UPPER&&upperBumpers.includes(o)){
+    return resolveUpperCircleExact(o,re,Math.min(175,boost*.42));
   }
+  const dx=ball.x-o.x,dy=ball.y-o.y,d=Math.hypot(dx,dy),rr=ball.r+collisionR;
+  if(d>=rr)return false;
   const nx=dx/(d||1),ny=dy/(d||1);
   ball.x=o.x+nx*(rr+.1);ball.y=o.y+ny*(rr+.1);
   const vn=ball.vx*nx+ball.vy*ny;
-  if(vn<0){
-    const impact=clamp((-vn+boost*.35)/720,.10,1);
-    ball.vx-=(1+re)*vn*nx;ball.vy-=(1+re)*vn*ny;
-    musicalImpact("bumper",impact,o.x,o.y,nowMs(),
-      `uppercore:${Math.round(o.x)}:${Math.round(o.y)}:${Math.round(collisionR)}`);
-  }
+  if(vn<0){ball.vx-=(1+re)*vn*nx;ball.vy-=(1+re)*vn*ny}
   if(boost){ball.vx+=nx*boost;ball.vy+=ny*boost}
   return true;
 }
@@ -4543,14 +4562,14 @@ function updateFlippers(dt){
 function activeBumper(o,now){
   if(now<o.cool)return;
   const upper=state.screen===SCREEN.UPPER;
-  const boost=upper?390:285;
-  const restitution=upper?.94:.88;
+  const boost=upper?165:255;
+  const restitution=upper?.91:.86;
   const preSpeed=Math.hypot(ball.vx,ball.vy);
   const collided=upper
     ?circleCollideRadius(o,o.hitR||o.r,restitution,boost)
     :circleCollide(o,restitution,boost);
   if(collided){
-    o.cool=now+(upper?76:90);
+    o.cool=now+(upper?105:90);
     if(upper){
       const bi=upperBumpers.indexOf(o);
       if(bi>=0){
@@ -5134,16 +5153,15 @@ function updateLowerGeometry(now){
   if(ball.y>900)drain(now);
 }
 function upperBumperCandidate(){
-  let best=null,bestScore=Infinity;
+  let best=null,bestT=Infinity;
   for(const o of upperBumpers){
     if(nowMs()<o.cool)continue;
-    const rr=ball.r+(o.hitR||o.r);
-    const direct=Math.hypot(ball.x-o.x,ball.y-o.y)-rr;
-    const sweep=pointSegmentDistance(o.x,o.y,ball.prevX,ball.prevY,ball.x,ball.y).d-rr;
-    const score=Math.min(direct,sweep);
-    if(score<bestScore){bestScore=score;best=o}
+    const hit=upperCircleContact(o);
+    if(!hit)continue;
+    const t=hit.inside?0:hit.t;
+    if(t<bestT){bestT=t;best=o}
   }
-  return bestScore<=0?best:null;
+  return best;
 }
 
 function updateUpperGeometry(now){
@@ -5173,10 +5191,6 @@ function updateUpperGeometry(now){
     soundEvent('DROP',.42,ball.x);
     return;
   }
-
-  // Large magnetic approach zones make intentional upper shots reliable without
-  // changing the visible collision radius. Fast balls are caught by swept collision.
-  upperBumpers.forEach(upperAssist);
 
   // One bumper owns this substep. This prevents the old double-reflection case
   // where a swept bumper hit and a nearby rail/post both changed velocity.
@@ -5242,8 +5256,6 @@ function updatePhysics(dt,now){
   // This replaces the old same-screen position teleport.
   if(ball.phase===PHASE.FIELD&&state.screen===SCREEN.UPPER&&ball.route){
     updateBallRoute(dt);
-    ball.trail.unshift({x:ball.x,y:ball.y});
-    if(ball.trail.length>20)ball.trail.pop();
     return;
   }
 
@@ -5280,12 +5292,13 @@ function updatePhysics(dt,now){
   else state.upperHeat=Math.max(0,state.upperHeat-dt*.22);
 
   ball.prevX=ball.x;ball.prevY=ball.y;
-  const gravity=(state.screen===SCREEN.UPPER?(state.game==="B"?620:555):(state.game==="B"?610:545))*(1+state.subEnergy*.08+(state.screen===SCREEN.UPPER?state.upperHeat*.22:0));
+  const baseGravity=state.screen===SCREEN.UPPER?(state.game==="B"?590:545):(state.game==="B"?585:540);
+  const gravity=baseGravity*(1+(state.screen===SCREEN.UPPER?state.upperHeat*.07:0));
   ball.vy+=gravity*dt;
   ball.x+=ball.vx*dt;ball.y+=ball.vy*dt;
   // Mild rolling/air loss. Energy should come primarily from rubbers and flippers.
-  ball.vx*=Math.pow(.9987,dt*60);
-  ball.vy*=Math.pow(.99915,dt*60);
+  ball.vx*=Math.pow(.9989,dt*60);
+  ball.vy*=Math.pow(.9990,dt*60);
 
   if(state.screen===SCREEN.LOWER)updateLowerGeometry(now);else updateUpperGeometry(now);
   laneSensors(now);
@@ -5304,11 +5317,9 @@ function updatePhysics(dt,now){
     }
   }else ball.stall=0;
 
-  sp=Math.hypot(ball.vx,ball.vy);const max=state.game==="B"?1220:1060;
+  sp=Math.hypot(ball.vx,ball.vy);const max=state.game==="B"?1140:1010;
   if(sp>max){const q=max/sp;ball.vx*=q;ball.vy*=q}
 
-  ball.trail.unshift({x:ball.x,y:ball.y});
-  if(ball.trail.length>20)ball.trail.pop();
 }
 
 /* ---------------- RENDER ---------------- */
@@ -5585,18 +5596,11 @@ function drawFlippers(){
   });
 }
 function drawBall(){
-  const transferFast=(ball.phase===PHASE.SHOOTER)||(state.edgePulse>.15);
-  ball.trail.forEach((p,i)=>{
-    const q=1-i/Math.max(1,ball.trail.length);
-    circle(p.x,p.y,Math.max(.8,(transferFast?5.4:4)*q),`rgba(238,234,222,${(transferFast?.22:.13)*q})`);
-  });
   if(ball.phase===PHASE.LOST)return;
-  if(transferFast&&Math.abs(ball.vy)>420){
-    const len=clamp(Math.abs(ball.vy)*.035,16,42);
-    line(ball.x,ball.y+Math.sign(ball.vy)*len,ball.x,ball.y,C.paper,1.2);
-  }
+  // No trail, glow, speed streak or aura: just one readable physical ball.
   const grad=ctx.createRadialGradient(ball.x-3,ball.y-4,1,ball.x,ball.y,ball.r);
-  grad.addColorStop(0,"#ffffff");grad.addColorStop(.35,"#d9d9d2");grad.addColorStop(1,"#777b78");circle(ball.x,ball.y,ball.r,grad);
+  grad.addColorStop(0,"#ffffff");grad.addColorStop(.42,"#deded6");grad.addColorStop(1,"#737874");
+  circle(ball.x,ball.y,ball.r,grad,C.paper,.55);
 }
 
 /* ============================================================
@@ -6738,6 +6742,26 @@ function scratchUpdate(g,dt,now){
 }
 
 /* ---------- 03 AMBIENT LABYRINTH ---------- */
+function mazeOpenDirs(g,x,y){
+  const cell=g.cells[y]?.[x];if(!cell)return [];
+  const dirs=[[0,-1],[1,0],[0,1],[-1,0]],out=[];
+  for(let i=0;i<4;i++){
+    const nx=x+dirs[i][0],ny=y+dirs[i][1];
+    if(!cell.walls[i]&&nx>=0&&nx<g.w&&ny>=0&&ny<g.h)out.push(i);
+  }
+  return out;
+}
+function mazeChooseDir(g,intent=0){
+  const open=mazeOpenDirs(g,g.x,g.y);
+  if(!open.length)return -1;
+  const back=(g.dir+2)%4,left=(g.dir+3)%4,right=(g.dir+1)%4,forward=g.dir;
+  if(intent<0&&open.includes(left))return left;
+  if(intent>0&&open.includes(right))return right;
+  if(open.includes(forward))return forward;
+  const noBack=open.filter(i=>i!==back);
+  if(noBack.length)return noBack[(g.steps+g.found)%noBack.length];
+  return open[0];
+}
 function mazeInit(){
   const w=11,h=9,cells=Array.from({length:h},()=>Array.from({length:w},()=>({v:false,walls:[1,1,1,1]})));
   const stack=[[0,0]];cells[0][0].v=true;
@@ -6751,17 +6775,14 @@ function mazeInit(){
     const [i,nx,ny]=opts[Math.floor(rnd()*opts.length)];
     cells[y][x].walls[i]=0;cells[ny][nx].walls[(i+2)%4]=0;cells[ny][nx].v=true;stack.push([nx,ny]);
   }
-
-  // Punch loops into the perfect maze so routing is a game, not one long corridor.
-  for(let k=0;k<15;k++){
+  for(let k=0;k<12;k++){
     const x=1+Math.floor(rnd()*(w-2)),y=1+Math.floor(rnd()*(h-2));
     const i=Math.floor(rnd()*4),d=dirs[i],nx=x+d[0],ny=y+d[1];
     if(nx>=0&&nx<w&&ny>=0&&ny<h){cells[y][x].walls[i]=0;cells[ny][nx].walls[(i+2)%4]=0}
   }
-
-  return {
+  const g={
     w,h,cells,x:0,y:0,dir:1,nextDir:1,turnIntent:0,
-    moveT:0,moveDur:.23,speed:1,steps:0,found:0,
+    moveT:0,moveDur:.25,steps:0,found:0,
     goalX:w-1,goalY:h-1,goalOpen:false,
     echoes:[
       {x:2,y:6,taken:false,label:"RAIN",color:C.cool},
@@ -6769,83 +6790,76 @@ function mazeInit(){
       {x:9,y:7,taken:false,label:"ROOM",color:C.green}
     ],
     sonar:0,sonarUntil:0,sonarCooldownUntil:0,boostUntil:0,
-    hitFlash:0,lastCellAt:0,trail:[],combo:0,bestCombo:0
+    hitFlash:0,lastCellAt:0,trail:[],combo:0,bestCombo:0,
+    invalidMoves:0
   };
+  g.dir=mazeChooseDir(g,0);g.nextDir=g.dir;
+  return g;
 }
 function mazeUpdate(g,dt,now){
   const dirs=[[0,-1],[1,0],[0,1],[-1,0]];
+  if(arcadeLeftPressed){g.turnIntent=-1;juiceReward("micro",390,760,.20,"LEFT")}
+  if(arcadeRightPressed){g.turnIntent=1;juiceReward("micro",600,760,.20,"RIGHT")}
 
-  // A/D are steering intentions for the NEXT junction, not turn-in-place controls.
-  if(arcadeLeftPressed){g.turnIntent=-1;juiceReward("micro",390,760,.24,"LEFT")}
-  if(arcadeRightPressed){g.turnIntent=1;juiceReward("micro",600,760,.24,"RIGHT")}
-
-  // SPACE = sonar burst + temporary flow boost.
   if(arcadeActionPressed&&now>=g.sonarCooldownUntil){
-    g.sonar=1;g.sonarUntil=now+900;g.sonarCooldownUntil=now+650;g.boostUntil=now+520;
-    juiceImpact(495,450,.58,{n:16,speed:130,life:.32,size:2.6,shake:1.8,flash:.055,rays:true,label:"SONAR"});
+    g.sonar=1;g.sonarUntil=now+900;g.sonarCooldownUntil=now+650;g.boostUntil=now+420;
+    juiceImpact(495,450,.46,{n:10,speed:105,life:.28,size:2.2,shake:1.1,flash:.035,label:"SONAR"});
     if(audioReady){
       const targets=g.echoes.filter(e=>!e.taken);
       const t=targets.length?targets.reduce((a,b)=>Math.hypot(a.x-g.x,a.y-g.y)<Math.hypot(b.x-g.x,b.y-g.y)?a:b):{x:g.goalX,y:g.goalY};
       const pan=clamp((t.x-g.x)/6,-.72,.72),snap=snapshotChord();
-      ambientGlassSemi(chordTone(4,4,snap),.20,.22,pan,now,.88);
-      airShimmer(chordTone(2,5,snap),.16,now+40,.25,-pan*.5);
+      ambientGlassSemi(chordTone(4,4,snap),.18,.22,pan,now,.82);
+      warmVoiceSemi(chordTone(0,2,snap),.020,.36,-pan*.25,-.18,now+28);
+    }
+  }
+  g.sonar=Math.max(0,g.sonar-dt*1.45);g.hitFlash=Math.max(0,g.hitFlash-dt*3.4);
+
+  // Before EVERY segment, validate the direction against the current cell.
+  if(g.moveT<=1e-8){
+    const open=mazeOpenDirs(g,g.x,g.y);
+    if(!open.includes(g.dir)){
+      const safe=mazeChooseDir(g,g.turnIntent);
+      if(safe<0){g.invalidMoves++;return}
+      g.dir=safe;g.nextDir=safe;g.turnIntent=0;
     }
   }
 
-  g.sonar=Math.max(0,g.sonar-dt*1.45);
-  g.hitFlash=Math.max(0,g.hitFlash-dt*3.4);
-  const boost=now<g.boostUntil?1.42:1;
+  const boost=now<g.boostUntil?1.25:1;
   g.moveT+=dt/g.moveDur*boost;
-
-  if(g.moveT>=1){
+  while(g.moveT>=1){
     g.moveT-=1;
-    g.x+=dirs[g.dir][0];g.y+=dirs[g.dir][1];g.steps++;g.lastCellAt=now;
-    g.trail.unshift({x:g.x,y:g.y,life:1});if(g.trail.length>18)g.trail.pop();
+    const open=mazeOpenDirs(g,g.x,g.y);
+    if(!open.includes(g.dir)){
+      g.invalidMoves++;
+      const safe=mazeChooseDir(g,g.turnIntent);
+      if(safe<0){g.moveT=0;break}
+      g.dir=safe;g.nextDir=safe;g.turnIntent=0;
+    }
+    const nx=g.x+dirs[g.dir][0],ny=g.y+dirs[g.dir][1];
+    if(nx<0||nx>=g.w||ny<0||ny>=g.h){g.invalidMoves++;g.moveT=0;break}
+    g.x=nx;g.y=ny;g.steps++;g.lastCellAt=now;
 
     for(const e of g.echoes){
       if(!e.taken&&e.x===g.x&&e.y===g.y){
         e.taken=true;g.found++;g.combo++;g.bestCombo=Math.max(g.bestCombo,g.combo);
-        juiceReward("power",495,450,.94,`MEMORY / ${e.label}`);
-        addScore(1400+g.found*450,now);
+        juiceReward("power",495,450,.86,`MEMORY / ${e.label}`);addScore(1400+g.found*450,now);
         song.twPleasureCharge=clamp(song.twPleasureCharge+.14,0,1);
         if(audioReady){
-          const snap=snapshotChord();
-          deepSubHit(45+g.found*2,.16,now,.30);
-          [0,2,4].forEach((d,i)=>warmVoiceSemi(chordTone(d,2+(i===2?1:0),snap),.045+.008*g.found,.38,(i-1)*.28,-.08,now+i*30));
-          airShimmer(chordTone(4,5,snap),.18,now+90,.42,.12);
+          const snap=snapshotChord();deepSubHit(43+g.found*2,.19,now,.34);
+          [0,2,4].forEach((d,i)=>warmVoiceSemi(chordTone(d,1+(i===2?1:0),snap),.052+.009*g.found,.44,(i-1)*.24,-.12,now+i*28));
+          airShimmer(chordTone(4,4,snap),.14,now+82,.36,.10);
         }
-        if(g.found>=3){g.goalOpen=true;juiceReward("power",495,450,1,"HOME OPEN")}
+        if(g.found>=3){g.goalOpen=true;juiceReward("power",495,450,.92,"HOME OPEN")}
       }
     }
+    if(g.goalOpen&&g.x===g.goalX&&g.y===g.goalY){arcadeFinish("LABYRINTH",now,"MEMORY FOUND");return}
 
-    if(g.goalOpen&&g.x===g.goalX&&g.y===g.goalY){
-      juiceReward("power",495,450,1,"HOME");
-      arcadeFinish("LABYRINTH",now,"MEMORY FOUND");
-      return;
-    }
-
-    const cell=g.cells[g.y][g.x];
-    const back=(g.dir+2)%4;
-    const forward=g.dir;
-    const left=(g.dir+3)%4,right=(g.dir+1)%4;
-    let chosen=-1;
-
-    if(g.turnIntent<0&&!cell.walls[left])chosen=left;
-    else if(g.turnIntent>0&&!cell.walls[right])chosen=right;
-    else if(!cell.walls[forward])chosen=forward;
-    else{
-      const opts=[left,right,back].filter(i=>!cell.walls[i]);
-      chosen=opts.length?opts[(g.steps+g.found)%opts.length]:back;
-      g.hitFlash=1;
-      juiceReward("snap",495,450,.35,"TURN");
-    }
-    if(chosen===left||chosen===right)g.combo++;
-    else g.combo=Math.max(0,g.combo-1);
+    const chosen=mazeChooseDir(g,g.turnIntent);
+    if(chosen<0){g.invalidMoves++;g.moveT=0;break}
+    if(chosen!==g.dir)g.combo++; else g.combo=Math.max(0,g.combo-1);
     g.bestCombo=Math.max(g.bestCombo,g.combo);
     g.dir=chosen;g.nextDir=chosen;g.turnIntent=0;
   }
-
-  for(const t of g.trail)t.life=Math.max(0,t.life-dt*1.8);
 }
 
 /* ---------- 04 ISOLATION TENNIS ---------- */
@@ -7190,11 +7204,6 @@ function drawMaze(g){
   const d=[[0,-1],[1,0],[0,1],[-1,0]][g.dir];
   const px=ox+(g.x+.5+d[0]*g.moveT)*cs,py=oy+(g.y+.5+d[1]*g.moveT)*cs;
 
-  for(const t of g.trail){
-    if(t.life<=0)continue;
-    const tx=ox+(t.x+.5)*cs,ty=oy+(t.y+.5)*cs;
-    ctx.save();ctx.globalAlpha=t.life*.24;circle(tx,ty,8+t.life*12,null,C.cool,1.2);ctx.restore();
-  }
 
   // Memory beacons pulse even through darkness when sonar is active.
   for(const e of g.echoes){
@@ -8766,7 +8775,8 @@ window.__PINBALL_TEST__={
   state,ball,plunger,FL,SCREEN,PHASE,MODE,song,bonusGame,audioStats,upperBumpers,
   resetBall,beginCharge,releaseCharge,updatePhysics,updateBonus,enterBonus,leaveBonus,finishBonusReturn,
   STORY_STAGES,currentStoryDef,storyAllClear,storyStartCurrent,storyAdvance,arcadeFinish,
-  staticInit,staticUpdate,mazeInit,mazeUpdate,memoryInit,memoryUpdate,dreamInit,dreamUpdate,
+  staticInit,staticUpdate,mazeInit,mazeUpdate,mazeOpenDirs,mazeChooseDir,memoryInit,memoryUpdate,dreamInit,dreamUpdate,
+  upperCircleContact,resolveUpperCircleExact,sweptCircleTOI,upperBumperCandidate,
   openFatherLetter,closeFatherLetter,
   FATHER_UNLOCK_POINTS,fatherEnding,beginFatherEnding,updateFatherEnding,fatherEndingProgress,
   setKeys:(l,r)=>{leftDown=l;rightDown=r},
@@ -10362,3 +10372,5 @@ V17.5 PORTRAIT MOBILE PASS
 - orientation/visualViewport resize support retained.
 - portraitLayoutMetrics exported for automated viewport testing.
 -->
+
+<!-- v17.6: exact upper bumper CCD, no ball trail/aura, safe maze traversal, calmer physics, thicker low-mid mix. -->
