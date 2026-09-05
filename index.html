@@ -579,14 +579,6 @@ const lerp=(a,b,t)=>a+(b-a)*t;
 let __testNow=null;
 function nowMs(){return __testNow===null?performance.now():__testNow;}
 const C={bg:"#080b0c",upperBg:"#091116",lowerBg:"#0d0e0b",paper:"#eef1e8",muted:"#707a73",line:"#303a37",soft:"#141b19",accent:"#ff6b3b",cool:"#66c8bf",green:"#a6cf76"};
-function portraitLayoutMetrics(viewW,viewH,safeTop=0,safeBottom=0){
-  const portrait=viewH>=viewW;
-  const canvasH=portrait?Math.min(viewW*.9375,viewH*.52):Math.min(viewH,viewW/1.0666667);
-  const canvasW=portrait?Math.min(viewW,canvasH*1.0666667):Math.min(viewW,viewH*1.0666667);
-  const controlTop=portrait?safeTop+canvasH+6:0;
-  const controlH=portrait?Math.max(0,viewH-controlTop-safeBottom):0;
-  return{portrait,canvasW,canvasH,controlTop,controlH};
-}
 
 const SCREEN={LOWER:0,UPPER:1};
 const PHASE={WAIT:0,SHOOTER:1,FIELD:2,LOST:3};
@@ -723,9 +715,12 @@ const song={
   transportStep:0,
   transportBar:0,
   transportNextMs:0,
+  transportNextAudioSec:0,
   transportScheduledSteps:0,
   transportQuarterKicks:0,
   transportLateRecoveries:0,
+  transportSkippedSteps:0,
+  transportResyncs:0,
   transportKickTimes:[],
 
   // HARMONIC BUILD
@@ -929,6 +924,13 @@ const song={
   lastAct:-1,
   actFlashUntil:0,
   surpriseCount:0,
+
+  // V29 / SCORE ACT — one authoritative macro-arrangement state.
+  scoreAct:0,
+  scoreActPending:0,
+  scoreActAt:0,
+  scoreActFlashUntil:0,
+  scoreActChanges:0,
   rewardAt:0,
   rewardDropUntil:0,
   rewardUntil:0,
@@ -946,10 +948,12 @@ const NOTE_SEMI=[0,4,7,11,14];
 
 
 const MINI_SAVE_KEY="pinballSynthMiniGameV8";
+const MINI_SAVE_VERSION=26;
+const STORY_STAGE_COUNT=10;
 
 function defaultMiniSave(){
   return {
-    version:20,
+    version:MINI_SAVE_VERSION,
     stage:"BREAKOUT",
     gameMode:"A",
     brokenMask:0,
@@ -967,7 +971,7 @@ function defaultMiniSave(){
     clears:0,
     storyStage:0,
     storyClears:0,
-    encoreIndex:0,
+    storyCycles:0,
     stagePerfects:{},
     arcadeCheckpoints:{},
     raceResume:{distanceM:0,checkpoints:0,combo:0,nearMisses:0,crashes:0},
@@ -977,6 +981,37 @@ function defaultMiniSave(){
     lastSavedAt:0,
     saveSerial:0
   };
+}
+
+function resetMiniGameCycleFields(save,{countCycle=false}={}){
+  const musicMask=(save.musicMask|0)&0x3ff;
+  if(countCycle)save.storyCycles=Math.max(0,save.storyCycles|0)+1;
+
+  save.stage="BREAKOUT";
+  save.brokenMask=0;
+  save.breakoutCleared=false;
+  save.phraseUnlocked=false;
+  save.raceUnlocked=false;
+  save.raceCleared=false;
+  save.raceResume={distanceM:0,checkpoints:0,combo:0,nearMisses:0,crashes:0};
+  save.kingdomUnlocked=false;
+  save.kingdomCheckpoint=0;
+  save.kingdomCleared=false;
+  save.bonusTier=0;
+  save.bestDistance=0;
+  save.perfects=0;
+  save.clears=0;
+  save.storyStage=0;
+  save.stagePerfects={};
+  save.arcadeCheckpoints={};
+  save.lastStageId="BREAKOUT";
+
+  // Arrangement unlocks belong to the song, not to one minigame lap.
+  // Before the first BREAKOUT clear, partial drum construction resets with the lap.
+  // Once BREAKOUT has been cleared, FULL GROOVE stays unlocked on later laps.
+  save.musicMask=musicMask;
+  save.drumBuild=0;
+  return save;
 }
 
 let miniSave=defaultMiniSave();
@@ -992,14 +1027,26 @@ function loadMiniSave(){
     if(!miniSave.raceResume||typeof miniSave.raceResume!=="object")miniSave.raceResume={distanceM:0,checkpoints:0,combo:0,nearMisses:0,crashes:0};
     // V21: old saves keep every musical layer corresponding to already-cleared story stages.
     ["STATIC","CLIMBER","TEMPEST","LANDER","JOUST","BUBBLE","HOCKEY","ROPE","DARUMA"].forEach(k=>{if(miniSave.arcadeCheckpoints)delete miniSave.arcadeCheckpoints[k]});
-    const clearedForMusic=clamp(miniSave.storyStage|0,0,10);
+    const clearedForMusic=clamp(miniSave.storyStage|0,0,STORY_STAGE_COUNT);
     const inferredMask=clearedForMusic<=0?0:((1<<clearedForMusic)-1);
     miniSave.musicMask=((miniSave.musicMask|0)|inferredMask)&0x3ff;
-    if(clearedForMusic<10)miniSave.musicMask&=~(1<<9);
+    if(clearedForMusic<STORY_STAGE_COUNT)miniSave.musicMask&=~(1<<9);
+
+    // V31: progressive BREAKOUT drums are valid again.
+    // A fully unlocked BREAKOUT role forces level 6; otherwise keep saved partial progress.
+    miniSave.drumBuild=clamp(miniSave.drumBuild|0,0,6);
+
+    // A player who already finished all ten stages enters a fresh lap immediately.
+    // Music unlocks are preserved, gameplay/checkpoints are reset.
+    if((miniSave.storyStage|0)>=STORY_STAGE_COUNT){
+      resetMiniGameCycleFields(miniSave,{countCycle:true});
+    }
+
+    delete miniSave.encoreIndex;
     // V25: the removed legacy ending system was removed entirely.
     delete miniSave.legacyPointsRemoved;
     delete miniSave.legacyReadRemoved;
-    miniSave.version=20;
+    miniSave.version=MINI_SAVE_VERSION;
   }catch(_){
     miniSave=defaultMiniSave();
   }
@@ -1007,7 +1054,7 @@ function loadMiniSave(){
 }
 
 function writeMiniSave(reason="AUTO"){
-  miniSave.version=17;
+  miniSave.version=MINI_SAVE_VERSION;
   miniSave.gameMode=state?.game||miniSave.gameMode||"A";
   miniSave.lastSavedAt=Date.now();
   miniSave.saveSerial=(miniSave.saveSerial|0)+1;
@@ -1068,7 +1115,7 @@ function restoreMiniGameProgress(){
 }
 
 function resetSong(){
-  song.started=false;song.step=0;song.bar=0;song.nextAt=0;song.bpm=state.game==="B"?124:122;
+  song.started=false;song.step=0;song.bar=0;song.nextAt=0;song.bpm=state.game==="B"?126:124;
   song.noteMask=[0,0,0,0,0];
   song.percussion=0;song.slings=0;song.loops=0;song.centers=0;song.clears=0;song.arrangerWins=0;
   song.panelUnlocked=[0,0,0,0,0];song.fxUnlocked=[0,0,0];
@@ -1086,8 +1133,9 @@ function resetSong(){
   song.tranceLoop=0;song.tranceShift=0;song.tranceBloom=0;song.trancePhase=0;song.hookCount=0;
   song.kickLock=0;song.chopMode=0;song.bassFlip=0;song.stutterMode=0;song.liftMode=0;
   song.overdrive=0;song.stutterUntil=0;song.panelDemoUntil=0;song.panelDemoIndex=-1;
-  song.transportStarted=false;song.transportStep=0;song.transportBar=0;song.transportNextMs=0;
+  song.transportStarted=false;song.transportStep=0;song.transportBar=0;song.transportNextMs=0;song.transportNextAudioSec=0;
   song.transportScheduledSteps=0;song.transportQuarterKicks=0;song.transportLateRecoveries=0;
+  song.transportSkippedSteps=0;song.transportResyncs=0;
   song.transportKickTimes=[];
   song.harmonicVoices=1;song.pendingVoices=1;song.chordBloom=0;song.chordPulse=0;
   song.guidedWorld=0;song.pendingWorld=-1;song.guidedQueue=[];song.guidedSerial=0;
@@ -1141,6 +1189,7 @@ function resetSong(){
   song.songNo=0;song.variation=0;song.formOffset=0;
   song.directorDream=0;song.directorDrive=0;song.directorCommits=0;
   song.lastAct=-1;song.actFlashUntil=0;song.surpriseCount=0;
+  song.scoreAct=0;song.scoreActPending=0;song.scoreActAt=0;song.scoreActFlashUntil=0;song.scoreActChanges=0;
   song.rewardAt=0;song.rewardDropUntil=0;song.rewardUntil=0;song.rewardSerial=0;
 
   song.drum=[1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0];
@@ -1164,6 +1213,141 @@ function partOn(i){return !!song.panelUnlocked[i]}
 function fxOn(i){return !!song.fxUnlocked[i]}
 
 const EMOTION_THRESHOLDS=[0,1800,5200,11000,20000,33000,76000,500000];
+
+const SCORE_ACTS=[
+  {score:0,      name:"AIR",   change:"AMBIENT / NO DRUMS",       drum:.00,bass:.00,acid:.00,chip:.10,lead:.00,pad:1.00,perc:.00,shimmer:.30,hook:.00,fill:.00,width:.46},
+  {score:5000,   name:"PULSE", change:"THEME FRAGMENT",           drum:.55,bass:.08,acid:.00,chip:.18,lead:.00,pad:.88,perc:.08,shimmer:.28,hook:.00,fill:.00,width:.54},
+  {score:15000,  name:"BODY",  change:"BASS + MAIN THEME",        drum:.78,bass:.70,acid:.06,chip:.26,lead:.04,pad:.72,perc:.18,shimmer:.26,hook:.04,fill:.00,width:.62},
+  {score:35000,  name:"DRIVE", change:"CHORD SHIFT + THEME VAR",  drum:1.00,bass:.86,acid:.72,chip:.36,lead:.16,pad:.56,perc:.34,shimmer:.28,hook:.10,fill:.06,width:.72},
+  {score:80000,  name:"LIFT",  change:"THEME UP / NEW HARMONY",   drum:1.04,bass:.91,acid:.65,chip:.48,lead:.64,pad:.44,perc:.46,shimmer:.42,hook:.56,fill:.14,width:.82},
+  {score:180000, name:"PEAK",  change:"FULL THEME / MODULATION",  drum:1.08,bass:.96,acid:.80,chip:.52,lead:.68,pad:.36,perc:.58,shimmer:.50,hook:.62,fill:.42,width:.90},
+  {score:350000, name:"BREAK", change:"DECONSTRUCT / RETURN",      drum:1.10,bass:1.00,acid:.84,chip:.58,lead:.72,pad:.30,perc:.66,shimmer:.56,hook:.68,fill:1.00,width:.96}
+];
+function scoreActIndex(score=state.score){
+  let i=0;
+  for(let n=1;n<SCORE_ACTS.length;n++)if(score>=SCORE_ACTS[n].score)i=n;
+  return i;
+}
+function scoreActSpec(index=song.scoreAct){
+  return SCORE_ACTS[clamp(index|0,0,SCORE_ACTS.length-1)];
+}
+function scoreActNextThreshold(index=song.scoreAct){
+  const next=SCORE_ACTS[(index|0)+1];
+  return next?next.score:null;
+}
+function scoreActProgress(score=state.score,index=song.scoreAct){
+  const cur=SCORE_ACTS[clamp(index|0,0,SCORE_ACTS.length-1)];
+  const next=SCORE_ACTS[(index|0)+1];
+  if(!next)return 1;
+  return clamp((score-cur.score)/Math.max(1,next.score-cur.score),0,1);
+}
+function commitScoreAct(index,now=nowMs()){
+  index=clamp(index|0,0,SCORE_ACTS.length-1);
+  if(index===song.scoreAct)return false;
+  song.scoreAct=index;
+  song.scoreActPending=index;
+  song.scoreActAt=now;
+  song.scoreActFlashUntil=now+3200;
+  song.scoreActChanges++;
+  const a=scoreActSpec(index);
+  song.sceneShiftUntil=Math.max(song.sceneShiftUntil,now+1800);
+  song.sceneShiftLabel=`ACT ${index+1} / ${a.name}`;
+  eventFlash(`ACT ${index+1} / ${a.name}`,now,1500,.92);
+  const change=(index>=1&&!drumsUnlocked())
+    ?`${a.change} / DRUMS LOCKED`
+    :a.change;
+  causeFlash(`${a.score.toLocaleString()} SCORE`,change,now,1900,.90);
+  song.dataBurst=Math.max(song.dataBurst,.46);
+  return true;
+}
+function maybeAdvanceScoreAct(step,bar,now=nowMs()){
+  if(state.mode!==MODE.PLAY)return;
+  const target=scoreActIndex(state.score);
+  song.scoreActPending=target;
+  if(step===0&&bar%4===0&&target!==song.scoreAct)commitScoreAct(target,now);
+}
+
+const MAIN_THEME=[
+  // [position in 2 bars (0..31), chord-degree, octave, length16, accent]
+  [0,0,3,2,1.00],
+  [3,2,3,1,.82],
+  [6,1,3,2,.76],
+  [10,4,3,2,.94],
+  [14,2,3,1,.72],
+  [18,0,4,2,1.00],
+  [22,3,3,2,.78],
+  [27,2,3,1,.86],
+  [30,1,3,2,.72]
+];
+function mainThemeWindow(bar=song.bar){
+  return state.mode===MODE.PLAY && song.scoreAct>=1 && ((bar%8)===4||(bar%8)===5);
+}
+function mainThemeVariant(bar=song.bar){
+  return Math.floor(bar/16)%3;
+}
+function scheduleMainTheme(step,bar,whenMs,snap){
+  if(!mainThemeWindow(bar))return;
+  const act=song.scoreAct|0;
+  const local=(bar%8-4)*16+step;
+  const variant=mainThemeVariant(bar);
+
+  for(let i=0;i<MAIN_THEME.length;i++){
+    const [pos,baseDegree,baseOct,len16,accent]=MAIN_THEME[i];
+    if(pos!==local)continue;
+
+    // PULSE only reveals three fragments. BODY reveals the full identity.
+    if(act===1 && ![0,2,4].includes(i))return;
+
+    // BREAK alternates a deconstructed 8-bar phrase with a full return.
+    const breakDown=act>=6 && (Math.floor(bar/8)%2===0);
+    if(breakDown && ![0,3,5,8].includes(i))return;
+
+    let degree=baseDegree;
+    if(act>=3 && variant===1 && (i===3||i===7))degree=(degree+4)%5;
+    if(act>=3 && variant===2 && (i===2||i===8))degree=(degree+1)%5;
+    if(breakDown && i>=5)degree=(4-degree+5)%5;
+
+    let oct=baseOct;
+    if(act>=4 && i>=5)oct+=1;
+    if(act>=5 && i===3)oct+=1;
+
+    const semi=chordTone(degree,oct,snap);
+    const sixteenth=60000/song.bpm/4;
+    const pan=clamp((i-4)*.105,-.48,.48);
+    const vel=(.13+.022*act)*accent;
+
+    // A short digital attack + restrained tonal body = 00s electronica theme.
+    electronicaPluck(semi,vel,whenMs,pan);
+    warmVoiceSemi(semi-12,.018+.004*act,sixteenth*len16/1000+.08,-pan*.30,-.12,whenMs);
+
+    if(act>=4 && accent>.9)
+      ambientGlassSemi(semi,.050+.008*act,.20,pan*.75,whenMs+18,.68+.04*act);
+
+    return;
+  }
+}
+
+function scoreRoleGain(id,bar=song.bar){
+  if(!miniMusicHas(id))return 0;
+  const a=scoreActSpec();
+  const field={
+    BREAKOUT:"drum",DRIVE:"acid",KINGDOM:"chip",SHOOTER:"lead",DROP:"pad",
+    MOLE:"perc",HOMERUN:"bass",GOLDFISH:"shimmer",CRANE:"hook",DARUMA:"fill"
+  }[id];
+  let g=field?(a[field]??0):0;
+  const bit=miniMusicBit(id);
+  const debut=song.miniMusicDebutBars>0&&song.miniMusicDebutBit===bit;
+  if(debut)g=Math.max(g,1.22);
+  else if(song.miniMusicDebutBars>0)g*=.32;
+  if(["SHOOTER","GOLDFISH","CRANE"].includes(id)&&!debut){
+    const order=["SHOOTER","GOLDFISH","CRANE"];
+    const active=order[(Math.floor(bar/2)+song.scoreAct)%order.length];
+    if(id!==active)g*=.12;
+    if(mainThemeWindow(bar))g*=.16;
+  }
+  return clamp(g,0,1.35);
+}
+
 function scoreEmotion(score=state.score){
   // Continuous 0..1 curve. The player does not need to know the math:
   // simply scoring makes the same composition emotionally deepen.
@@ -1182,10 +1366,6 @@ function triggerEmotionTier(t,now=nowMs()){
   song.emotionTier=t;
   song.emotionPulse=1;
   song.emotionPeak=Math.max(song.emotionPeak,scoreEmotion());
-  song.sceneShiftUntil=now+900;
-  const labels=["STILL","TIDE","WARM","FLOW","OPEN","DEEP","LUCID","ECSTASY"];
-  song.sceneShiftLabel=labels[t]||"FLOW";
-  // Crucially: no sound burst here. Score only changes the safe arranger's ceiling.
 }
 function mellowLevel(){
   const panels=song.panelUnlocked.filter(Boolean).length;
@@ -1812,7 +1992,7 @@ function playRequiemCounterline(whenMs=nowMs(),intensity=1){
 
 function requiemBreath(whenMs=nowMs(),amount=.3){
   if(!audioReady)return;
-  const t=AC.currentTime+Math.max(0,(whenMs-nowMs())/1000);
+  const t=audioTimeForMs(whenMs);
   const len=Math.max(256,Math.floor(AC.sampleRate*.42));
   const b=AC.createBuffer(1,len,AC.sampleRate),d=b.getChannelData(0);
   for(let i=0;i<len;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/len,1.5);
@@ -1840,7 +2020,7 @@ function motorikPluck(semi,vel=.28,dur=.18,pan=0,whenMs=nowMs(),bright=.5){
   semi=snapSemiToSnapshot(semi,snap);
   auditResolvedSemi(semi,snap,whenMs);
 
-  const t=AC.currentTime+Math.max(0,(whenMs-nowMs())/1000);
+  const t=audioTimeForMs(whenMs);
   const f=65.406*Math.pow(2,semi/12);
 
   const carrier=AC.createOscillator(),harm=AC.createOscillator();
@@ -1887,7 +2067,7 @@ function motorikBass(semi,vel=.34,whenMs=nowMs(),accent=false){
   if(!audioReady)return;
   const snap=harmonySnapshotForWhen(whenMs);
   semi=snapSemiToSnapshot(semi,snap);
-  const t=AC.currentTime+Math.max(0,(whenMs-nowMs())/1000);
+  const t=audioTimeForMs(whenMs);
   const f=65.406*Math.pow(2,semi/12);
 
   const o1=AC.createOscillator(),o2=AC.createOscillator();
@@ -2300,26 +2480,23 @@ function guidedPan(i,count,width){
 
 function guidedAirNoise(whenMs,intensity=.5,pan=0){
   if(!audioReady)return;
-  const t=AC.currentTime+Math.max(0,(whenMs-nowMs())/1000);
-  const len=Math.max(256,Math.floor(AC.sampleRate*.32));
-  const b=AC.createBuffer(1,len,AC.sampleRate),d=b.getChannelData(0);
-  for(let i=0;i<len;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/len,2.2);
-  const s=AC.createBufferSource(),bp=AC.createBiquadFilter(),g=AC.createGain();
+  const t=audioTimeForMs(whenMs),dur=.32;
+  const src=sharedNoiseSource(),bp=AC.createBiquadFilter(),g=AC.createGain();
   bp.type="bandpass";bp.frequency.value=2400;bp.Q.value=.55;
   g.gain.setValueAtTime(.0001,t);
   g.gain.linearRampToValueAtTime(.0045*intensity,t+.045);
   g.gain.exponentialRampToValueAtTime(.0001,t+.33);
-  s.buffer=b;s.connect(bp);bp.connect(g);
+  src.connect(bp);bp.connect(g);
   if(AC.createStereoPanner){const p=AC.createStereoPanner();p.pan.value=pan;g.connect(p);p.connect(spaceBus)}
   else g.connect(spaceBus);
-  s.start(t);s.stop(t+.34);
+  startNoiseSlice(src,t,dur+.02);
 }
 
 function ambientGlassSemi(semi,vel=.22,dur=.24,pan=0,whenMs=nowMs(),brightness=.5){
   if(!audioReady)return;
   const snap=harmonySnapshotForWhen(whenMs);
   semi=snapSemiToSnapshot(semi,snap);auditResolvedSemi(semi,snap,whenMs);
-  const t=AC.currentTime+Math.max(0,(whenMs-nowMs())/1000),f=65.406*Math.pow(2,semi/12);
+  const t=audioTimeForMs(whenMs),f=65.406*Math.pow(2,semi/12);
   const o1=AC.createOscillator(),o2=AC.createOscillator(),g=AC.createGain(),lp=AC.createBiquadFilter();
   o1.type="sine";o2.type="sine";o1.frequency.value=f;o2.frequency.value=f*2;
   lp.type="lowpass";lp.frequency.value=1600+brightness*2200;lp.Q.value=.8;
@@ -2475,7 +2652,7 @@ function processGuidedSlot(absEighth,whenMs){
 }
 function applyAmbientPump(whenMs,depth=.24){
   if(!audioReady||!pumpGain)return;
-  const t=AC.currentTime+Math.max(0,(whenMs-nowMs())/1000);
+  const t=audioTimeForMs(whenMs);
   const d=clamp(depth,0,.46);
 
   // Dance-oriented pump: quick dip, musical recovery before next quarter.
@@ -2490,151 +2667,50 @@ function applyAmbientPump(whenMs,depth=.24){
 function playAmbientBed(snap,whenMs,bar){
   const world=GUIDED_WORLD[song.guidedWorld]||GUIDED_WORLD[1];
   const bg=TW_BACKDROPS[song.twBackdrop]||TW_BACKDROPS[1];
-  const unlocked=Math.max(1,song.panelUnlocked.filter(Boolean).length);
-  const tier=scoreEmotionTier();
-  const mega=song.ascensionBars>0;
-  const pleasureRelease=song.twPleasureReleaseBars>0;
-  const committed=song.worldCommitBars>0;
-  const upperMix=upperContributionMix();
-  const blooming=song.bloomBars>0||song.bedBloom||upperMix.surge;
-  const voices=clamp(2+Math.floor(unlocked/2)+(blooming?1:0)+(mega?1:0),2,6);
+  const act=scoreActSpec();
+  const inBonus=state.mode===MODE.BONUS;
+  const context=inBonus?.46:1;
+  const pad=act.pad*context;
   const chord=snap.tones;
-  const dur=2.75+(blooming?.78:0)+(mega?.58:0)+(pleasureRelease?.60:0)+(committed?.46:0);
-  const width=clamp(
-    world.width*(.62+.05*tier)+bg.width*.34+(blooming?.14:0)+(mega?.12:0)+(pleasureRelease?.12:0),
-    .24,.98
-  );
-  const degreeOrder=[0,2,1,3,4,0];
+  const barSec=60000/song.bpm*4/1000;
+  const voices=song.scoreAct<2?2:(song.scoreAct<4?3:4);
+  const width=clamp(act.width*world.width*.82+bg.width*.18,.24,.92);
+  const order=[0,2,1,4];
+
   for(let i=0;i<voices;i++){
-    const degree=degreeOrder[i];
-    let semi=chord[degree%chord.length] + (i>=3?12:0);
-    if(song.guidedWorld===0&&i<2)semi-=12;
-    if(mega&&i===voices-1)semi+=12;
-    const pan=guidedPan(i,voices,width);
-    const vel=(.043+.007*i)*(1+.05*tier)*(mega?1.08:1)*(pleasureRelease?1.10:1);
-    warmVoiceSemi(semi,vel,dur,pan,-.22+world.bright,whenMs);
+    const degree=order[i]%chord.length;
+    let semi=chord[degree]+(i>=2?12:0);
+    if(song.guidedWorld===0&&i===0)semi-=12;
+    const pan=guidedPan(i,voices,width)*(i<2?.55:1);
+    const vel=(.026+.005*i)*pad;
+    const dur=Math.min(barSec*.76,1.55+.12*song.scoreAct);
+    warmVoiceSemi(semi,vel,dur,pan,-.26+world.bright*.45,whenMs+i*13);
   }
 
-  // Each upper world has an unmistakable but sparse signature.
+  if(song.scoreAct>=2 && bar%2===0)
+    lowWarmPad(chordTone(0,-2,snap),.52*pad,whenMs,1.42,0);
+
   const beat=60000/song.bpm;
-  if(bar%2===0){
-    if(song.guidedWorld===0){
-      motorikBass(chordTone(0,-2,snap),.15+.03*song.guidedPleasure,whenMs+beat*2,false);
-    }else if(song.guidedWorld===1){
-      ambientGlassSemi(chord[2]+12,.13,.42,-.22,whenMs+beat*2,.46);
-      ambientGlassSemi(chord[4]+12,.10,.38,.22,whenMs+beat*2.5,.50);
-    }else{
-      ambientGlassSemi(chord[4]+24,.14,.55,.28,whenMs+beat*2,.70);
-      guidedAirNoise(whenMs+beat*2.5,.34,.18);
-    }
-  }
-
-  if((committed||song.upperSurgeBars>0) && bar%2===0){
-    const m=1+.10*(song.worldMasteryTier[song.guidedWorld]||0);
-    if(song.guidedWorld===0){warmVoiceSemi(chord[0]-24,.060*m,1.75,-.10,-.38,whenMs+beat*.5);motorikBass(chordTone(0,-2,snap),.25*m,whenMs+beat*2,false)}
-    else if(song.guidedWorld===1){ambientGlassSemi(chord[1]+12,.18*m,.46,-.50,whenMs+beat*.75,.60);ambientGlassSemi(chord[3]+12,.16*m,.58,.50,whenMs+beat*2.75,.62)}
-    else{ambientGlassSemi(chord[4]+24,.19*m,.72,.38,whenMs+beat*.75,.82);guidedAirNoise(whenMs+beat*1.75,.44*m,.26)}
-  }
-
-  if(committed && bar%2===1){
-    if(song.guidedWorld===0) warmVoiceSemi(chord[0]-24,.046,1.40,-.20,-.30,whenMs+beat*1.5);
-    if(song.guidedWorld===1) ambientGlassSemi(chord[3]+12,.14,.52,.30,whenMs+beat*1.5,.55);
-    if(song.guidedWorld===2) { ambientGlassSemi(chord[4]+24,.15,.66,.34,whenMs+beat*1.5,.76); guidedAirNoise(whenMs+beat*2.25,.30,.22); }
-  }
-
-  if(blooming && bar%2===1){
-    warmVoiceSemi(chord[0]-12,.048,1.35,-.32,-.22,whenMs+beat*2);
-    ambientGlassSemi(chord[4]+24,.15,.62,.34,whenMs+beat*2.5,.68);
-  }
-  if(mega && bar%2===0){
-    warmVoiceSemi(chord[2]+24,.052,1.65,.38,.02,whenMs+beat*1.5);
-    guidedAirNoise(whenMs+beat*3,.42,-.26);
-  }
-  // Backdrop behaves like touch:waves' back track: same player actions,
-  // different underlying musical context.
-  if(bar%2===0){
-    if(song.twBackdrop===0){
-      warmVoiceSemi(chord[0]-24,.034,1.55,-.18,-.35,whenMs+beat*.5);
-    }else if(song.twBackdrop===1){
-      warmVoiceSemi(chord[2],.026,1.10,.10,-.18,whenMs+beat*1.5);
-    }else if(song.twBackdrop===2){
-      ambientGlassSemi(chord[4]+12,.095,.44,.26,whenMs+beat*1.5,.64);
-    }else if(song.twBackdrop===3){
-      ambientGlassSemi(chord[3]+24,.10,.58,.30,whenMs+beat*.5,.80);
-      guidedAirNoise(whenMs+beat*2.5,.20,.18);
-    }
-  }
-
-  if(pleasureRelease){
-    // No extra rhythm: reward is spectral expansion and harmonic air.
-    warmVoiceSemi(chord[0]-24,.040,1.80,-.34,-.28,whenMs+beat*.5);
-    ambientGlassSemi(chord[4]+24,.12,.72,.36,whenMs+beat*2,.78);
-  }
-
-  if(bar%2===0){
-    const rootLow=chord[0]-24;
-    const lowVel=.72 + .08*song.guidedPleasure + (song.guidedWorld===0?.12:0);
-    lowWarmPad(rootLow,lowVel,whenMs,1.88,-.05);
-  }
-
-  if(song.guidedWorld===0 || song.bloomBars>0 || song.ascensionBars>0){
-    deepSubHit(43,.10+(song.guidedWorld===0?.07:0)+(song.bloomBars>0?.05:0),whenMs+.12,.70);
-  }
-
-  // AIR LAYER: independent from the mellow body path.
-  // Sparse by design: perceived openness without constant hiss.
   if(bar%2===1){
-    const airSemi=chord[4]+24+(song.guidedWorld===2?12:0);
-    airShimmer(airSemi,.16+.04*song.guidedPleasure,whenMs+beat*1.5,.55,
-               song.guidedWorld===2?.28:.16);
+    if(song.guidedWorld===1)
+      ambientGlassSemi(chordTone(4,4,snap),.080*context,.30,.30,whenMs+beat*2,.58);
+    else if(song.guidedWorld===2){
+      ambientGlassSemi(chordTone(4,5,snap),.090*context,.42,.34,whenMs+beat*2,.78);
+      guidedAirNoise(whenMs+beat*2.6,.18*context,.22);
+    }
   }
 
-  if(song.guidedWorld===2 || song.bloomBars>0 || song.ascensionBars>0){
-    airNoise(.13+(song.ascensionBars>0?.05:0),whenMs+beat*3,.22,.22);
-  }
-
-}
-
-function voiceCountFromPanels(){
-  let n=1;
-  for(let i=0;i<5;i++){
-    if(song.panelUnlocked[i])n=Math.max(n,i+1);
-  }
-  return clamp(n,1,5);
-}
-
-function chordRegisterOffset(voiceIndex,upperMode){
-  if(upperMode===0){
-    return voiceIndex<2?-12:0;
-  }
-  if(upperMode===2){
-    return voiceIndex>=3?12:0;
-  }
-  return 0;
-}
-
-function playStackedChord(snap,whenMs,voices=1,intensity=1,upperMode=-1,bloom=false){
-  const chord=snap.tones;
-  const count=clamp(voices,1,5);
-
-  for(let i=0;i<count;i++){
-    const base=chord[i%chord.length];
-    const reg=chordRegisterOffset(i,upperMode);
-    const semi=base+reg;
-    const pan=(i-(count-1)/2)*(bloom?.18:.10);
-    const vel=(.022+.010*i)*intensity*(i===0?1.18:1);
-    const dur=bloom?1.00:.72;
-
-    warmVoiceSemi(semi,vel,dur,pan,-.32,whenMs);
+  if(song.bloomBars>0||song.ascensionBars>0||song.worldCommitBars>0){
+    ambientGlassSemi(chordTone(2,5,snap),.075*context,.50,-.38,whenMs+beat*1.5,.72);
+    ambientGlassSemi(chordTone(4,5,snap),.070*context,.58,.38,whenMs+beat*2.5,.78);
   }
 }
-
 
 // ============================================================
 // BREAKOUT GROOVE — HARD RHYTHM GRAMMAR
 //
 // The mini-game NEVER writes drum hits directly.
-// It only raises drumBuildPending.
+// Every four destroyed blocks raises the drum arrangement one step.
 // drumBuildActive may change ONLY on a bar boundary.
 //
 // Therefore:
@@ -2645,111 +2721,157 @@ function playStackedChord(snap,whenMs,voices=1,intensity=1,upperMode=-1,bloom=fa
 // off-grid drum event.
 // ============================================================
 const DRUM_BUILD_NAMES=[
-  "KICK",
-  "CLOSED HAT",
+  "AMBIENT",
+  "KICK + HAT",
   "CLAP",
   "SHAKER",
   "OPEN HAT",
-  "PERC",
+  "PERCUSSION",
   "FULL GROOVE"
 ];
+function breakoutLevelForBroken(n){
+  if(n>=24)return 6;
+  if(n>=20)return 5;
+  if(n>=16)return 4;
+  if(n>=12)return 3;
+  if(n>=8)return 2;
+  if(n>=4)return 1;
+  return 0;
+}
 
 function drumClosedHat(vel=.46,whenMs=nowMs(),pan=0){
   if(!audioReady||!drumBus)return;
-  const t=AC.currentTime+Math.max(0,(whenMs-nowMs())/1000);
-  const len=Math.max(96,Math.floor(AC.sampleRate*.045));
-  const b=AC.createBuffer(1,len,AC.sampleRate),d=b.getChannelData(0);
-  for(let i=0;i<len;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/len,3.0);
-  const src=AC.createBufferSource(),hp=AC.createBiquadFilter(),bp=AC.createBiquadFilter(),g=AC.createGain();
-  hp.type="highpass";hp.frequency.value=5100;hp.Q.value=.55;bp.type="bandpass";bp.frequency.value=9300;bp.Q.value=.45;
-  g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(.042*vel,t+.001);g.gain.exponentialRampToValueAtTime(.0001,t+.045);
-  src.buffer=b;src.connect(hp);hp.connect(bp);bp.connect(g);
+  const t=audioTimeForMs(whenMs),dur=.045;
+  const src=sharedNoiseSource(),hp=AC.createBiquadFilter(),bp=AC.createBiquadFilter(),g=AC.createGain();
+  hp.type="highpass";hp.frequency.value=5100;hp.Q.value=.55;
+  bp.type="bandpass";bp.frequency.value=9300;bp.Q.value=.45;
+  g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(.042*vel,t+.001);g.gain.exponentialRampToValueAtTime(.0001,t+dur);
+  src.connect(hp);hp.connect(bp);bp.connect(g);
   if(AC.createStereoPanner){const p=AC.createStereoPanner();p.pan.value=pan;g.connect(p);p.connect(drumBus)}else g.connect(drumBus);
-  src.start(t);src.stop(t+.05);song.drumHitsClosed++;
+  startNoiseSlice(src,t,dur+.005);song.drumHitsClosed++;
 }
 function drumOpenHat(vel=.42,whenMs=nowMs(),pan=.12){
   if(!audioReady||!drumBus)return;
-  const t=AC.currentTime+Math.max(0,(whenMs-nowMs())/1000),len=Math.max(256,Math.floor(AC.sampleRate*.23));
-  const b=AC.createBuffer(1,len,AC.sampleRate),d=b.getChannelData(0);for(let i=0;i<len;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/len,1.25);
-  const src=AC.createBufferSource(),hp=AC.createBiquadFilter(),g=AC.createGain();hp.type="highpass";hp.frequency.value=6000;hp.Q.value=.55;
-  g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(.036*vel,t+.002);g.gain.exponentialRampToValueAtTime(.0001,t+.23);
-  src.buffer=b;src.connect(hp);hp.connect(g);if(AC.createStereoPanner){const p=AC.createStereoPanner();p.pan.value=pan;g.connect(p);p.connect(drumBus)}else g.connect(drumBus);
-  src.start(t);src.stop(t+.24);song.drumHitsOpen++;
-  airNoise(vel*.48,whenMs+.018,.095,pan);
-
+  const t=audioTimeForMs(whenMs),dur=.23;
+  const src=sharedNoiseSource(),hp=AC.createBiquadFilter(),g=AC.createGain();
+  hp.type="highpass";hp.frequency.value=6000;hp.Q.value=.55;
+  g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(.036*vel,t+.002);g.gain.exponentialRampToValueAtTime(.0001,t+dur);
+  src.connect(hp);hp.connect(g);
+  if(AC.createStereoPanner){const p=AC.createStereoPanner();p.pan.value=pan;g.connect(p);p.connect(drumBus)}else g.connect(drumBus);
+  startNoiseSlice(src,t,dur+.01);song.drumHitsOpen++;
+  airNoise(vel*.30,whenMs,.075,pan);
 }
 function drumClap(vel=.54,whenMs=nowMs()){
-  if(!audioReady||!drumBus)return;const t=AC.currentTime+Math.max(0,(whenMs-nowMs())/1000);
-  [0,.011,.024].forEach((off,j)=>{const len=Math.max(128,Math.floor(AC.sampleRate*.075));const b=AC.createBuffer(1,len,AC.sampleRate),d=b.getChannelData(0);for(let i=0;i<len;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/len,2.55);const src=AC.createBufferSource(),bp=AC.createBiquadFilter(),hp=AC.createBiquadFilter(),g=AC.createGain();bp.type="bandpass";bp.frequency.value=1500+j*330;bp.Q.value=.70;hp.type="highpass";hp.frequency.value=650;g.gain.setValueAtTime(.0001,t+off);g.gain.exponentialRampToValueAtTime(.055*vel*(1-j*.14),t+off+.001);g.gain.exponentialRampToValueAtTime(.0001,t+off+.075);src.buffer=b;src.connect(bp);bp.connect(hp);hp.connect(g);g.connect(drumBus);src.start(t+off);src.stop(t+off+.08)});song.drumHitsClap++;
+  if(!audioReady||!drumBus)return;
+  const t=audioTimeForMs(whenMs);
+  [0,.008,.016].forEach((off,j)=>{
+    const dur=.065,src=sharedNoiseSource(),bp=AC.createBiquadFilter(),hp=AC.createBiquadFilter(),g=AC.createGain();
+    bp.type="bandpass";bp.frequency.value=1580+j*300;bp.Q.value=.72;
+    hp.type="highpass";hp.frequency.value=700;
+    g.gain.setValueAtTime(.0001,t+off);
+    g.gain.exponentialRampToValueAtTime(.050*vel*(1-j*.15),t+off+.001);
+    g.gain.exponentialRampToValueAtTime(.0001,t+off+dur);
+    src.connect(bp);bp.connect(hp);hp.connect(g);g.connect(drumBus);
+    startNoiseSlice(src,t+off,dur+.006);
+  });
+  song.drumHitsClap++;
 }
 function drumShaker(vel=.36,whenMs=nowMs(),pan=0){
-  if(!audioReady||!drumBus)return;const t=AC.currentTime+Math.max(0,(whenMs-nowMs())/1000),len=Math.max(80,Math.floor(AC.sampleRate*.038));const b=AC.createBuffer(1,len,AC.sampleRate),d=b.getChannelData(0);for(let i=0;i<len;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/len,2.0);const src=AC.createBufferSource(),hp=AC.createBiquadFilter(),g=AC.createGain();hp.type="highpass";hp.frequency.value=7200;g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(.026*vel,t+.001);g.gain.exponentialRampToValueAtTime(.0001,t+.038);src.buffer=b;src.connect(hp);hp.connect(g);if(AC.createStereoPanner){const p=AC.createStereoPanner();p.pan.value=pan;g.connect(p);p.connect(drumBus)}else g.connect(drumBus);src.start(t);src.stop(t+.042);song.drumHitsShaker++;
+  if(!audioReady||!drumBus)return;
+  const t=audioTimeForMs(whenMs),dur=.038;
+  const src=sharedNoiseSource(),hp=AC.createBiquadFilter(),g=AC.createGain();
+  hp.type="highpass";hp.frequency.value=7200;
+  g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(.026*vel,t+.001);g.gain.exponentialRampToValueAtTime(.0001,t+dur);
+  src.connect(hp);hp.connect(g);
+  if(AC.createStereoPanner){const p=AC.createStereoPanner();p.pan.value=pan;g.connect(p);p.connect(drumBus)}else g.connect(drumBus);
+  startNoiseSlice(src,t,dur+.004);song.drumHitsShaker++;
 }
 function drumPerc(vel=.42,whenMs=nowMs(),pan=0){
-  if(!audioReady||!drumBus)return;const t=AC.currentTime+Math.max(0,(whenMs-nowMs())/1000);const o=AC.createOscillator(),o2=AC.createOscillator(),g=AC.createGain(),bp=AC.createBiquadFilter();o.type="sine";o.frequency.setValueAtTime(620,t);o.frequency.exponentialRampToValueAtTime(350,t+.07);o2.type="triangle";o2.frequency.value=930;bp.type="bandpass";bp.frequency.value=820;bp.Q.value=1.05;g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(.052*vel,t+.001);g.gain.exponentialRampToValueAtTime(.0001,t+.09);o.connect(bp);o2.connect(bp);bp.connect(g);if(AC.createStereoPanner){const p=AC.createStereoPanner();p.pan.value=pan;g.connect(p);p.connect(drumBus)}else g.connect(drumBus);o.start(t);o2.start(t);o.stop(t+.095);o2.stop(t+.095);song.drumHitsPerc++;
+  if(!audioReady||!drumBus)return;const t=audioTimeForMs(whenMs);const o=AC.createOscillator(),o2=AC.createOscillator(),g=AC.createGain(),bp=AC.createBiquadFilter();o.type="sine";o.frequency.setValueAtTime(620,t);o.frequency.exponentialRampToValueAtTime(350,t+.07);o2.type="triangle";o2.frequency.value=930;bp.type="bandpass";bp.frequency.value=820;bp.Q.value=1.05;g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(.052*vel,t+.001);g.gain.exponentialRampToValueAtTime(.0001,t+.09);o.connect(bp);o2.connect(bp);bp.connect(g);if(AC.createStereoPanner){const p=AC.createStereoPanner();p.pan.value=pan;g.connect(p);p.connect(drumBus)}else g.connect(drumBus);o.start(t);o2.start(t);o.stop(t+.095);o2.stop(t+.095);song.drumHitsPerc++;
 }
 
+function drumsUnlocked(){
+  return Math.max(
+    song.drumBuildActive|0,
+    song.drumBuildPending|0,
+    miniSave.drumBuild|0,
+    ((song.miniMusicMask|0)&1)?6:0,
+    ((miniSave.musicMask|0)&1)?6:0
+  )>0;
+}
+function currentDrumBuildTarget(){
+  const inBreakout=
+    state.mode===MODE.BONUS &&
+    typeof bonusGame!=="undefined" &&
+    bonusGame.stage==="BREAKOUT";
+
+  if(inBreakout)
+    return clamp(Math.max(song.drumBuildPending|0,miniSave.drumBuild|0),0,6);
+
+  if(((song.miniMusicMask|0)&1)||((miniSave.musicMask|0)&1))return 6;
+  return clamp(Math.max(song.drumBuildPending|0,miniSave.drumBuild|0),0,6);
+}
 function applyDrumBuildAtBarBoundary(){
-  const next=clamp(song.drumBuildPending|0,0,6);
+  const next=currentDrumBuildTarget();
   if(next!==song.drumBuildActive){
     song.drumBuildActive=next;
     song.drumBuildMax=Math.max(song.drumBuildMax,next);
     song.drumBuildChanges++;
-    const now=nowMs();song.sceneShiftUntil=now+1200;song.sceneShiftLabel=`DRUM LIVE / ${DRUM_BUILD_NAMES[next]}`;eventFlash(`${DRUM_BUILD_NAMES[next]} LIVE`,now,900,.88);
+    const now=nowMs(),name=DRUM_BUILD_NAMES[next]||"DRUM GROOVE";
+    song.sceneShiftUntil=now+1350;
+    song.sceneShiftLabel=`DRUM LIVE / ${name}`;
+    eventFlash(`${name} LIVE`,now,980,.90);
   }
 }
 
 function scheduleBreakoutDrums(step,bar,whenMs){
   const level=clamp(song.drumBuildActive|0,0,6);
+  if(level<=0)return;
   const upper=upperContributionMix();
-  const hatMix=upper.w===1?(1.12+.10*upper.mastery):1;
-  const percMix=upper.w===2?(1.08+.08*upper.mastery):1;
-  const surgeMix=(upper.surge?1.10:1)*miniMusicDebutGain("BREAKOUT");
+  const debut=miniMusicDebutGain("BREAKOUT");
+  const inBreakout=state.mode===MODE.BONUS&&typeof bonusGame!=="undefined"&&bonusGame.stage==="BREAKOUT";
+  const context=state.mode===MODE.BONUS?(inBreakout?1:.34):1;
+  const actMix=inBreakout?1:scoreActSpec().drum;
+  const mix=Math.max(debut>1?1.12:0,actMix)*context;
+  if(mix<=.02)return;
 
-  if(level>=1){
-    const hats=(level>=4)?[1,5,9,13]:[2,6,10,14];
-    if(hats.includes(step)){
-      const accent=(step===1||step===9)?1.0:.84;
-      const ghost=level>=4?.55:1.0;
-      drumClosedHat((.76+(level>=6?.07:0))*accent*ghost*hatMix*surgeMix,
-                    whenMs,step<8?-.11:.11);
-    }
+  const hatMix=(upper.w===1?(1.06+.06*upper.mastery):1)*mix;
+  const percMix=(upper.w===2?(1.05+.05*upper.mastery):1)*mix;
+  const surgeMix=(upper.surge?1.05:1)*mix;
+  const offbeat=(step===2||step===6||step===10||step===14);
+
+  // LEVEL 1: stable offbeat closed hat. The phase NEVER changes with score.
+  if(level>=1 && level<4 && offbeat){
+    const a=(step===2||step===10)?1:.90;
+    drumClosedHat(.52*a*hatMix,whenMs,step<8?-.08:.08);
   }
 
-  if(level>=2 && (step===4||step===12)){
-    const backbeat=step===12?1.04:1.0;
-    drumClap((.72+(level>=6?.07:0))*backbeat*surgeMix,whenMs);
-  }
+  // LEVEL 2: canonical backbeat on beats 2 and 4.
+  if(level>=2 && (step===4||step===12))
+    drumClap(.56*(step===12?1.04:1)*surgeMix,whenMs);
 
+  // LEVEL 3: quiet 16th motion; never stronger than the grid-defining hats.
   if(level>=3 && (step&1)){
-    const shakerAccent={1:.60,3:1.00,5:.68,7:.84,9:.60,11:1.00,13:.68,15:.92}[step]||.65;
-    drumShaker(.43*shakerAccent*hatMix,whenMs,step<8?-.17:.17);
+    const a=(step===3||step===11)?.72:.42;
+    drumShaker(.20*a*hatMix,whenMs,step<8?-.14:.14);
   }
 
-  // OPEN HAT = all four offbeat eighths (裏打ち)
-  if(level>=4 && (step===2||step===6||step===10||step===14)){
-    const accent=(step===2||step===10)?1.0:.92;
-    drumOpenHat(.59*accent*hatMix*surgeMix,whenMs,step<8?-.07:.10);
+  // LEVEL 4: open hat REPLACES the closed offbeat hat, not layers beside it.
+  if(level>=4 && offbeat){
+    const a=(step===2||step===10)?1:.90;
+    drumOpenHat(.50*a*hatMix,whenMs,step<8?-.07:.09);
   }
 
-  if(level>=5 && (step===3||step===11)){
-    drumPerc(.57*percMix*surgeMix,whenMs,step===3?-.18:.18);
-  }
+  // LEVEL 5: percussion reinforces existing offbeats instead of inventing a new pulse.
+  if(level>=5 && (step===6||step===14))
+    drumPerc(.31*percMix,whenMs,step===6?-.17:.17);
 
-  if(level>=6 && bar%4===3 && (step===13||step===15)){
-    drumPerc(step===15?.50:.38,whenMs,step===13?-.12:.12);
+  // LEVEL 6: one phrase-end fill. It never changes the underlying quarter/backbeat phase.
+  if(level>=6 && bar%4===3){
+    if(step===13)drumShaker(.24*mix,whenMs,-.08);
+    if(step===15)drumPerc(.38*mix,whenMs,.10);
   }
 }
-
-
-const FEATURE_PHRASES=[
-  [[0,2,3,2,1],[3,4,3,1,.72],[6,3,3,2,.84],[10,1,3,2,.72],[14,4,3,2,1],
-   [16,3,3,2,.92],[19,2,3,1,.68],[22,4,3,2,.86],[27,1,3,1,.66],[30,2,4,2,1]],
-  [[0,4,3,2,1],[4,2,3,1,.70],[7,3,3,1,.78],[11,1,3,2,.74],[14,2,4,2,.96],
-   [16,4,3,2,.88],[20,3,3,1,.72],[23,1,3,1,.68],[26,2,3,2,.82],[30,4,4,2,1]],
-  [[0,1,3,2,.92],[2,2,3,1,.68],[6,4,3,2,1],[10,3,3,1,.70],[13,2,4,2,.88],
-   [16,1,3,2,.88],[18,3,3,1,.66],[22,4,3,2,.96],[27,2,3,1,.68],[30,3,4,2,1]]
-];
 
 function featurePhraseNote(semi,vel=.2,whenMs=nowMs(),dur=.18,pan=0){
   if(!audioReady)return;
@@ -2775,7 +2897,7 @@ let acidLastSemi=null;
 function acidArpVoice(semi,vel=.62,whenMs=nowMs(),cutoff=1500,res=8.5,slide=0,pan=0){
   if(!audioReady||!acidBus)return;
 
-  const t=AC.currentTime+Math.max(0,(whenMs-nowMs())/1000);
+  const t=audioTimeForMs(whenMs);
   const f=65.406*Math.pow(2,semi/12);
 
   const osc=AC.createOscillator();
@@ -2876,7 +2998,8 @@ function raceGridIntent(){
 function scheduleRaceAcid(step,bar,whenMs,snap){
   const rc=raceAcidContext();
   const reward=(song.acidDriveRewardBars>0||miniMusicHas("DRIVE"))&&state.mode===MODE.PLAY;
-  if(!rc&&!reward)return;
+  const roleMix=rc?1:scoreRoleGain("DRIVE",bar);
+  if(!rc&&(!reward||roleMix<=.025))return;
 
   // TRUE 16TH ARPEGGIATOR:
   // one note on EVERY master 16th step.
@@ -2954,7 +3077,7 @@ function scheduleRaceAcid(step,bar,whenMs,snap){
   // Slight 4-step velocity shape, but NO timing variation.
   const accent=[1.00,.70,.82,.74][gi%4];
   const roleBoost=reward?miniMusicDebutGain("DRIVE"):1;
-  const vel=(reward?.43:.66)*accent*(boost?1.08:1)*roleBoost;
+  const vel=(reward?.43:.66)*accent*(boost?1.08:1)*roleBoost*(rc?1:roleMix);
 
   acidArpVoice(
     semi,
@@ -2963,7 +3086,7 @@ function scheduleRaceAcid(step,bar,whenMs,snap){
     cutoff,
     resonance,
     slide,
-    (norm-.5)*.82
+    (norm-.5)*.46
   );
 
   song.acidDrivePeak=Math.max(song.acidDrivePeak,cutoff);
@@ -3011,7 +3134,7 @@ function scheduleRaceObstacle(step,bar,whenMs){
 
 function chipPulse(semi,vel=.35,whenMs=nowMs(),dur=.10,pan=0,bright=.5){
   if(!audioReady||!chipBus)return;
-  const t=AC.currentTime+Math.max(0,(whenMs-nowMs())/1000);
+  const t=audioTimeForMs(whenMs);
   const f=65.406*Math.pow(2,semi/12);
   const o=AC.createOscillator(),g=AC.createGain(),lp=AC.createBiquadFilter();
 
@@ -3036,7 +3159,7 @@ function chipPulse(semi,vel=.35,whenMs=nowMs(),dur=.10,pan=0,bright=.5){
 
 function chipTriangle(semi,vel=.25,whenMs=nowMs(),dur=.14){
   if(!audioReady||!chipBus)return;
-  const t=AC.currentTime+Math.max(0,(whenMs-nowMs())/1000);
+  const t=audioTimeForMs(whenMs);
   const f=65.406*Math.pow(2,semi/12);
   const o=AC.createOscillator(),g=AC.createGain();
   o.type="triangle";o.frequency.value=f;
@@ -3048,25 +3171,15 @@ function chipTriangle(semi,vel=.25,whenMs=nowMs(),dur=.14){
 
 function chipNoise(vel=.16,whenMs=nowMs(),dur=.035,pan=0){
   if(!audioReady||!chipBus)return;
-  const t=AC.currentTime+Math.max(0,(whenMs-nowMs())/1000);
-  const len=Math.max(64,Math.floor(AC.sampleRate*dur));
-  const b=AC.createBuffer(1,len,AC.sampleRate),d=b.getChannelData(0);
-  let prev=0;
-  for(let i=0;i<len;i++){
-    const n=Math.random()*2-1;
-    prev=prev*.35+n*.65;
-    d[i]=prev*Math.pow(1-i/len,1.8);
-  }
-  const s=AC.createBufferSource(),hp=AC.createBiquadFilter(),g=AC.createGain();
+  const t=audioTimeForMs(whenMs);
+  const src=sharedNoiseSource(),hp=AC.createBiquadFilter(),g=AC.createGain();
   hp.type="highpass";hp.frequency.value=3600;
   g.gain.setValueAtTime(.0001,t);
   g.gain.exponentialRampToValueAtTime(.018*vel,t+.001);
   g.gain.exponentialRampToValueAtTime(.0001,t+dur);
-  s.buffer=b;s.connect(hp);hp.connect(g);
-  if(AC.createStereoPanner){
-    const p=AC.createStereoPanner();p.pan.value=pan;g.connect(p);p.connect(chipBus);
-  }else g.connect(chipBus);
-  s.start(t);s.stop(t+dur+.005);
+  src.connect(hp);hp.connect(g);
+  if(AC.createStereoPanner){const p=AC.createStereoPanner();p.pan.value=pan;g.connect(p);p.connect(chipBus)}else g.connect(chipBus);
+  startNoiseSlice(src,t,dur+.006);
 }
 
 function kingdomChipLevel(){
@@ -3161,61 +3274,91 @@ function kingdomEvent(kind,x,now=nowMs()){
 function scheduleKingdomReward(step,bar,whenMs,snap){
   if((song.kingdomRewardBars<=0&&!miniMusicHas("KINGDOM")) || state.mode!==MODE.PLAY)return;
   if(step%2!==0)return;
+  const mix=scoreRoleGain("KINGDOM",bar);
+  if(mix<=.025)return;
   const pattern=KINGDOM_MOTIFS[(song.bonusTier+song.guidedWorld)%KINGDOM_MOTIFS.length];
   const degree=pattern[(step/2)|0];
-  const boost=miniMusicDebutGain("KINGDOM");
-  kingdomTone(chordTone(degree,3,snap),.31*boost,whenMs,.16,(degree-2)*.10);
-  if(step===0||step===8)chipPulse(chordTone(degree,4,snap),.22*boost,whenMs,.07,step===0?-.22:.22,.72);
+  const boost=miniMusicDebutGain("KINGDOM")*mix;
+  kingdomTone(chordTone(degree,3,snap),.25*boost,whenMs,.14,(degree-2)*.08);
+  if((step===0||step===8)&&mix>.25)
+    chipPulse(chordTone(degree,4,snap),.17*boost,whenMs,.06,step===0?-.18:.18,.70);
 }
 
 
-function scheduleSpectacleBody(step,bar,whenMs,snap){
-  if(step!==0||state.mode===MODE.TITLE)return;
-  const s=spectacleLevel(whenMs);
-  if(s<.30)return;
-  const root=chordTone(0,1,snap),fifth=chordTone(4,1,snap),third=chordTone(2,2,snap);
-
-  // Low-mid mass: octave root + fifth. Sustained, not a new rhythmic pattern.
-  warmVoiceSemi(root-12,.024+.036*s,1.45+s*.80,-.24,-.28,whenMs);
-  warmVoiceSemi(fifth-12,.018+.028*s,1.30+s*.62,.24,-.26,whenMs+18);
-  warmVoiceSemi(root,.014+.020*s,1.18+s*.45,0,-.22,whenMs+36);
-
-  if(s>.52){
-    warmVoiceSemi(root,.018+.020*s,1.45,.0,-.15,whenMs+32);
-    deepSubHit(42,.085+.090*s,whenMs+.04,.52+s*.24);
+function electronicaGrain(vel=.20,whenMs=nowMs(),pan=0,bright=.5){
+  if(!audioReady)return;
+  const t=audioTimeForMs(whenMs);
+  const dur=.030+.025*bright,len=Math.max(96,Math.floor(AC.sampleRate*dur));
+  const b=AC.createBuffer(1,len,AC.sampleRate),d=b.getChannelData(0);
+  let held=0;
+  for(let i=0;i<len;i++){
+    if(i%7===0)held=Math.round((Math.random()*2-1)*12)/12;
+    d[i]=held*Math.pow(1-i/len,2.4);
   }
-  if(s>.72){
-    ambientGlassSemi(third+12,.055+.055*s,.44,-.34,whenMs+70,.64+s*.18);
-    ambientGlassSemi(fifth+12,.050+.050*s,.52,.34,whenMs+102,.68+s*.16);
-    airShimmer(fifth+24,.075+.070*s,whenMs+120,.38,.18);
-  }
+  const src=AC.createBufferSource(),bp=AC.createBiquadFilter(),g=AC.createGain();
+  bp.type="bandpass";bp.frequency.value=2800+bright*5600;bp.Q.value=1.4;
+  g.gain.setValueAtTime(.0001,t);
+  g.gain.exponentialRampToValueAtTime(.018*vel,t+.001);
+  g.gain.exponentialRampToValueAtTime(.0001,t+dur);
+  src.buffer=b;src.connect(bp);bp.connect(g);
+  if(AC.createStereoPanner){
+    const p=AC.createStereoPanner();p.pan.value=clamp(pan,-.72,.72);
+    g.connect(p);p.connect(airBus||dryBus);
+  }else g.connect(airBus||dryBus);
+  src.start(t);src.stop(t+dur+.01);
 }
-
-function scheduleStoryMemory(step,bar,whenMs,snap){
-  const cleared=clamp(miniSave.storyStage|0,0,7);
-  if(cleared<=0||state.mode!==MODE.PLAY)return;
-
-  // Story-memory layer: intentionally tiny. It should feel remembered,
-  // not like another foreground instrument.
-  if(cleared>=2 && step===14 && bar%4===3){
-    chipPulse(chordTone(2,4,snap),.075,whenMs,.045,.34,.28);
+function electronicaPluck(semi,vel=.18,whenMs=nowMs(),pan=0){
+  if(!audioReady)return;
+  const snap=harmonySnapshotForWhen(whenMs);
+  semi=snapSemiToSnapshot(semi,snap);
+  const t=audioTimeForMs(whenMs);
+  const f=65.406*Math.pow(2,semi/12);
+  const o=AC.createOscillator(),o2=AC.createOscillator(),bp=AC.createBiquadFilter(),g=AC.createGain();
+  o.type="square";o.frequency.value=f;
+  o2.type="sine";o2.frequency.value=f*2;
+  bp.type="bandpass";bp.frequency.value=Math.min(7200,Math.max(900,f*5.2));bp.Q.value=2.2;
+  g.gain.setValueAtTime(.0001,t);
+  g.gain.exponentialRampToValueAtTime(.018*vel,t+.002);
+  g.gain.exponentialRampToValueAtTime(.0001,t+.085);
+  o.connect(bp);o2.connect(bp);bp.connect(g);
+  if(AC.createStereoPanner){
+    const p=AC.createStereoPanner();p.pan.value=clamp(pan,-.65,.65);
+    g.connect(p);p.connect(dryBus);
+  }else g.connect(dryBus);
+  o.start(t);o2.start(t);o.stop(t+.09);o2.stop(t+.09);
+}
+function scheduleScoreActDetails(step,bar,whenMs,snap){
+  if(state.mode!==MODE.PLAY)return;
+  if(song.scoreAct>=1 && step===15 && bar%2===1)
+    electronicaGrain(.14+.03*song.scoreAct,whenMs,.30,.34);
+  if(song.scoreAct>=2 && (step===7||step===15)){
+    const d=step===7?2:4;
+    electronicaPluck(chordTone(d,4,snap),.16+.02*song.scoreAct,whenMs,step===7?-.34:.34);
   }
-  if(cleared>=3 && step===0 && bar%8===4){
-    chipTriangle(chordTone(0,0,snap),.12,whenMs,.42);
-  }
-  if(cleared>=4 && (step===3||step===11) && bar%4===1){
-    airNoise(.025,whenMs,.055,step===3?-.52:.52);
-  }
-  if(cleared>=6 && step===8 && bar%8===7){
-    warmVoiceSemi(chordTone(2,3,snap),.012,.62,-.18,-.18,whenMs);
-    warmVoiceSemi(chordTone(4,3,snap),.010,.72,.22,-.18,whenMs+.035);
+  if(song.scoreAct>=3 && (step===5||step===13))
+    electronicaGrain(.22,whenMs,step===5?-.46:.46,.62);
+  if(song.scoreAct>=4 && step===14 && bar%2===0)
+    electronicaPluck(chordTone(4,5,snap),.20,whenMs,.38);
+  if(song.scoreAct>=5 && bar%4===3 && (step===12||step===14))
+    electronicaGrain(step===14?.34:.26,whenMs,step===12?-.52:.52,.88);
+  if(song.scoreAct>=6 && bar%4===3 && step===15){
+    electronicaGrain(.46,whenMs,0,1);
+    chipNoise(.10,whenMs,.032,0);
   }
 }
 
 function scheduleTransportStep(step,bar,whenMs){
   const qt=whenMs,bar16=bar%16;
+
+  // HARD SYNC RULE:
+  // bar-boundary arrangement state is committed BEFORE ANY sound on beat one.
+  // v31.1 did this after the quarter kick, causing the first kick of a newly
+  // unlocked drum bar to disappear and making the groove sound phase-shifted.
+  if(step===0)applyDrumBuildAtBarBoundary();
+
   twUpdateGestureInterpreter(whenMs);
   song.coreBar=bar16;
+  maybeAdvanceScoreAct(step,bar,whenMs);
   maybeAdvanceHarmonyChapter(step,bar,whenMs);
   song.harmonyAnchorAt=whenMs;
   song.harmonyAnchorCoreBar=bar16;
@@ -3240,19 +3383,22 @@ function scheduleTransportStep(step,bar,whenMs){
   // RHYTHM IS EARNED.
   // NEW GAME begins as pure ambient harmony. The first BREAKOUT unlock
   // introduces the kick together with the first percussion layer.
-  if(song.drumBuildActive>=1 && [0,4,8,12].includes(step)){
-    const tier=scoreEmotionTier();
-    const pleasure=clamp(song.guidedPleasure+.10*tier,0,1);
+  if(drumsUnlocked() && song.drumBuildActive>=1 && [0,4,8,12].includes(step)){
+    const act=scoreActSpec(),pleasure=clamp(song.guidedPleasure,0,1);
     const bg=TW_BACKDROPS[song.twBackdrop]||TW_BACKDROPS[1];
-    grooveKick((.66+.08*pleasure+(step===0?.05:0))*bg.sub,qt);
-    applyAmbientPump(qt,.19+bg.pump*.50+.12*pleasure+(song.twPleasureReleaseBars>0?.05:0));
-    song.transportQuarterKicks++;
-    song.transportKickTimes.push(qt);
-    if(song.transportKickTimes.length>96)song.transportKickTimes.shift();
+    const inBreakout=state.mode===MODE.BONUS&&typeof bonusGame!=="undefined"&&bonusGame.stage==="BREAKOUT";
+    const context=state.mode===MODE.BONUS?(inBreakout?1:.48):1;
+    const mix=Math.max(miniMusicDebutGain("BREAKOUT")>1?1.05:0,act.drum)*context;
+    if(mix>.03){
+      grooveKick((.62+.08*pleasure+(step===0?.05:0))*bg.sub*mix,qt);
+      applyAmbientPump(qt,(.16+bg.pump*.38+.10*pleasure)*Math.min(1,mix));
+      song.transportQuarterKicks++;
+      song.transportKickTimes.push(qt);
+      if(song.transportKickTimes.length>96)song.transportKickTimes.shift();
+    }
   }
 
-  // BREAKOUT GROOVE. The drum arrangement is read only from the hard master grid.
-  if(step===0)applyDrumBuildAtBarBoundary();
+  // BREAKOUT GROOVE. State was committed at the absolute start of this grid step.
   scheduleBreakoutDrums(step,bar,qt);
 
   if(step===0){
@@ -3275,26 +3421,11 @@ function scheduleTransportStep(step,bar,whenMs){
     if(song.acidDriveRewardBars>0)song.acidDriveRewardBars--;
     if(song.kingdomRewardBars>0)song.kingdomRewardBars--;
   }
-  scheduleSpectacleBody(step,bar,qt,snap);
-  scheduleStoryMemory(step,bar,qt,snap);
+  scheduleScoreActDetails(step,bar,qt,snap);
 
-  // SCORE-DRIVEN FORM DEVELOPMENT. Harmony changes are the main event; these
-  // sparse layers make each chapter audibly different without adding timing chaos.
-  const hChapter=song.harmonyChapter|0;
-  if(hChapter>=1 && step===8 && bar%2===1){
-    ambientGlassSemi(chordTone(4,3,snap),.075+.012*hChapter,.42,.28,qt,.54+.05*hChapter);
-  }
-  if(hChapter>=2 && (step===6||step===14)){
-    const d=step===6?2:4;
-    chipPulse(chordTone(d,3,snap),.13+.018*hChapter,qt,.07,step===6?-.28:.28,.52+.06*hChapter);
-  }
-  if(hChapter>=3 && step===0 && bar%2===0){
-    warmVoiceSemi(chordTone(0,-2,snap),.036,.90,-.10,-.32,qt);
-    warmVoiceSemi(chordTone(2,-1,snap),.021,.78,.12,-.25,qt+.03);
-  }
-  if(hChapter>=4 && (step===4||step===12)){
-    airShimmer(chordTone(step===4?2:4,4,snap),.10,qt,.34,step===4?-.24:.24);
-  }
+  // Main theme is the audible narrative of score progression.
+  // It is sparse at first, then returns with small harmonic/rhythmic variations.
+  scheduleMainTheme(step,bar,qt,snap);
 
   scheduleKingdomReward(step,bar,qt,snap);
   scheduleKingdomChip(step,bar,qt,snap);
@@ -3303,17 +3434,17 @@ function scheduleTransportStep(step,bar,whenMs){
   scheduleRaceAcid(step,bar,qt,snap);
   scheduleRaceObstacle(step,bar,qt);
 
-  // DANCE BASS: every offbeat eighth locks against the four-on-floor.
-  // Fixed grid only. No collision timing, no random rests.
-  if(song.drumBuildActive>=1 && (step===2||step===6||step===10||step===14)){
-    const rootSemi=chordTone(0,-2,snap);
-    const bassAccent=(step===2||step===10)?1.0:.84;
-    mellowBodyBass(rootSemi,(.52+.08*song.guidedPleasure)*bassAccent,qt,.245,
-                   step<8?-.035:.035);
-
-    // Deep sub support is sparser than the body bass, keeping 40–60 Hz clean.
-    if(step===2||step===10){
-      deepSubHit(49,(.17+.035*song.guidedPleasure),qt,.235);
+  // SCORE-ACT BASS. If HOMERUN is unlocked and audible, its melodic line owns
+  // the low register; the generic offbeat bass is suppressed instead of stacked.
+  if(state.mode===MODE.PLAY && drumsUnlocked() && song.drumBuildActive>=1 && song.scoreAct>=2 &&
+     (step===2||step===6||step===10||step===14)){
+    const act=scoreActSpec(),homeBass=scoreRoleGain("HOMERUN",bar);
+    if(homeBass<.18){
+      const rootSemi=chordTone(0,-2,snap);
+      const bassAccent=(step===2||step===10)?1.0:.82;
+      mellowBodyBass(rootSemi,(.38+.05*song.guidedPleasure)*bassAccent*act.bass,qt,.22,0);
+      if((step===2||step===10)&&act.bass>.55)
+        deepSubHit(49,.115*act.bass,qt,.20);
     }
   }
 
@@ -3358,81 +3489,104 @@ function scheduleTransportStep(step,bar,whenMs){
 
   // Dynamic mix opens continuously, but no rhythmic part is added.
   if(audioReady){
-    const p=clamp(song.guidedPleasure+.10*scoreEmotion(),0,1);
+    const act=scoreActSpec();
+    const p=clamp(song.guidedPleasure+.08*scoreEmotion(),0,1);
     const bg=TW_BACKDROPS[song.twBackdrop]||TW_BACKDROPS[1];
-    const motionOpen=song.twGestureHeight*.700 + song.twGestureEnergy*.400;
-    const cutoff=clamp(2100+p*1750+motionOpen*1050+bg.bright*1250,1100,7200);
-    filter.frequency.setTargetAtTime(cutoff,AC.currentTime,.16);
-
-    const macro=(song.bloomBars>0?.08:0)+(song.ascensionBars>0?.12:0)+(song.twPleasureReleaseBars>0?.10:0);
+    const motionOpen=song.twGestureHeight*.52 + song.twGestureEnergy*.28;
+    const cutoff=clamp(1900+p*1350+motionOpen*900+bg.bright*900+song.scoreAct*220,1200,6800);
+    const macro=(song.bloomBars>0?.06:0)+(song.ascensionBars>0?.09:0)+(song.twPleasureReleaseBars>0?.07:0);
     const mastery=masterySpaceBonus();
     const wc=song.worldCommitBars>0?1:0,wm=(song.worldMasteryTier[song.guidedWorld]||0)/5;
-    const worldWet=song.guidedWorld===0?-.03:(song.guidedWorld===1?.08:.15),worldCut=song.guidedWorld===0?-520:(song.guidedWorld===1?220:760);
-    filter.frequency.setTargetAtTime(clamp(cutoff+worldCut*wc+wm*260,1100,7200),AC.currentTime,.16);
-    revGain.gain.setTargetAtTime(.30+p*.18+macro+mastery+worldWet*wc+(bg.wet-1)*.12,AC.currentTime,.30);
-    delayFbL.gain.setTargetAtTime(.21+p*.09+macro*.30+mastery*.36+(bg.wet-1)*.08,AC.currentTime,.30);
-    delayFbR.gain.setTargetAtTime(.19+p*.08+macro*.27+mastery*.32+(bg.wet-1)*.07,AC.currentTime,.30);
+    const worldCut=song.guidedWorld===0?-360:(song.guidedWorld===1?120:520);
+    filter.frequency.setTargetAtTime(clamp(cutoff+worldCut*wc+wm*180,1200,7000),AC.currentTime,.14);
+
+    // Clearer image: wetness grows much slower than density.
+    revGain.gain.setTargetAtTime(.20+p*.08+macro+mastery*.35+(bg.wet-1)*.06,AC.currentTime,.28);
+    delayFbL.gain.setTargetAtTime(.15+p*.055+macro*.18+mastery*.20,AC.currentTime,.28);
+    delayFbR.gain.setTargetAtTime(.13+p*.050+macro*.16+mastery*.18,AC.currentTime,.28);
+
     if(chipBus){
       const inKingdom=(state.mode===MODE.BONUS&&typeof bonusGame!=="undefined"&&bonusGame.stage==="KINGDOM");
       const chipLevel=inKingdom?kingdomChipLevel():0;
-      chipBus.gain.setTargetAtTime(inKingdom?(.62+chipLevel*.085):.48,AC.currentTime,.12);
-      if(chipLP)chipLP.frequency.setTargetAtTime(4800+chipLevel*900,AC.currentTime,.18);
+      const mainChip=state.mode===MODE.PLAY?scoreRoleGain("KINGDOM",bar):0;
+      chipBus.gain.setTargetAtTime(inKingdom?(.70+chipLevel*.070):(.20+.34*mainChip),AC.currentTime,.12);
+      if(chipLP)chipLP.frequency.setTargetAtTime(4200+chipLevel*720+mainChip*700,AC.currentTime,.16);
     }
 
     if(acidBus){
       const racing=(state.mode===MODE.BONUS&&typeof bonusGame!=="undefined"&&bonusGame.stage==="RACE");
-      const rewardAcid=song.acidDriveRewardBars>0&&state.mode===MODE.PLAY;
-      const acidTarget=racing?1.28:(rewardAcid?1.06:.88);
-      acidBus.gain.setTargetAtTime(acidTarget,AC.currentTime,.08);
-      if(acidTone){
-        const toneGain=racing?4.4:(rewardAcid?3.6:2.6);
-        acidTone.gain.setTargetAtTime(toneGain,AC.currentTime,.10);
-      }
+      const mainAcid=state.mode===MODE.PLAY?scoreRoleGain("DRIVE",bar):0;
+      acidBus.gain.setTargetAtTime(racing?1.04:(.18+.58*mainAcid),AC.currentTime,.08);
+      if(acidTone)acidTone.gain.setTargetAtTime(racing?2.6:(.7+1.5*mainAcid),AC.currentTime,.10);
     }
 
     if(airBus){
-      const worldAir=(song.guidedWorld===2?.22:(song.guidedWorld===1?.08:0));
-      const macroAir=(song.bloomBars>0?.12:0)+(song.ascensionBars>0?.20:0)+(song.twPleasureReleaseBars>0?.10:0);
-      airBus.gain.setTargetAtTime(.70+p*.16+worldAir+macroAir,AC.currentTime,.22);
-      airShelf.gain.setTargetAtTime(3.6+worldAir*7+macroAir*5,AC.currentTime,.24);
+      const worldAir=(song.guidedWorld===2?.14:(song.guidedWorld===1?.05:0));
+      const macroAir=(song.bloomBars>0?.08:0)+(song.ascensionBars>0?.13:0)+(song.twPleasureReleaseBars>0?.07:0);
+      airBus.gain.setTargetAtTime(.48+act.width*.14+worldAir+macroAir,AC.currentTime,.20);
+      airShelf.gain.setTargetAtTime(2.1+act.width*1.4+worldAir*4+macroAir*3,AC.currentTime,.22);
     }
   }
 
   song.transportScheduledSteps++;
 }
+function advanceTransportCursorOne(){
+  song.transportStep++;
+  if(song.transportStep>=16){
+    song.transportStep=0;
+    song.transportBar++;
+    song.bar=song.transportBar;
+    rebuildRhythm();
+  }
+}
+
 function updateComposer(now){
   if(!audioReady||state.mode===MODE.TITLE||!song.started)return;
   if(song.epilogue){updateEpilogue(now);return}
   if(state.mode===MODE.OVER)return;
 
-  const stepMs=60000/song.bpm/4;
-  const lookAheadMs=120;
+  const stepSec=(60/song.bpm)/4;
+  const lookAheadSec=.220;
+  const staleLimitSec=Math.max(.018,stepSec*.42);
+  const audioNow=AC.currentTime;
+
+  // One frame = one exact perf/audio anchor. Every voice scheduled from this
+  // composer pass uses this identical conversion pair.
+  audioPerfAnchorMs=now;
+  audioCtxAnchorSec=audioNow;
+  audioAnchorAtPerfMs=now;
 
   if(!song.transportStarted){
-    // Lock first transport event to the next 16th boundary.
-    if(!musicEpoch)musicEpoch=now;
-    const elapsed=Math.max(0,now-musicEpoch);
-    song.transportNextMs=musicEpoch+Math.ceil(elapsed/stepMs)*stepMs;
+    song.transportNextAudioSec=audioNow+.055;
+    song.transportNextMs=now+55;
     song.transportStep=0;
     song.transportBar=0;
     song.transportStarted=true;
+    musicEpoch=song.transportNextMs;
   }
 
-  // If the tab hiccups, NEVER skip musical steps.
-  // Schedule all missing grid events until we are 120 ms ahead.
-  let guard=0;
-  while(song.transportNextMs<=now+lookAheadMs && guard++<64){
-    if(song.transportNextMs<now-10)song.transportLateRecoveries++;
-    scheduleTransportStep(song.transportStep,song.transportBar,song.transportNextMs);
-
-    song.transportStep++;
-    if(song.transportStep>=16){
-      song.transportStep=0;
-      song.transportBar++;
-      song.bar=song.transportBar;
-      rebuildRhythm();
+  // AudioContext time is the master. Main-thread hitches cannot change phase.
+  if(song.transportNextAudioSec<audioNow-staleLimitSec){
+    const skip=Math.max(1,Math.floor((audioNow-song.transportNextAudioSec)/stepSec)+1);
+    song.transportLateRecoveries+=skip;
+    song.transportSkippedSteps+=skip;
+    song.transportResyncs++;
+    for(let i=0;i<skip;i++){
+      if(song.transportStep===0)applyDrumBuildAtBarBoundary();
+      advanceTransportCursorOne();
     }
-    song.transportNextMs+=stepMs;
+    song.transportNextAudioSec+=skip*stepSec;
+  }
+
+  let guard=0;
+  while(song.transportNextAudioSec<=audioNow+lookAheadSec && guard++<8){
+    // Convert ONLY for non-audio musical state/visual timestamps.
+    // audioTimeForMs() maps this value straight back to transportNextAudioSec.
+    const whenMs=now+(song.transportNextAudioSec-audioNow)*1000;
+    song.transportNextMs=whenMs;
+    scheduleTransportStep(song.transportStep,song.transportBar,whenMs);
+    advanceTransportCursorOne();
+    song.transportNextAudioSec+=stepSec;
   }
 }
 
@@ -3459,9 +3613,10 @@ let subBus=null,bodyBus=null,subComp=null,bodySat=null;
 let airBus=null,airHP=null,airShelf=null,airComp=null;
 let acidBus=null,acidComp=null,acidTone=null;
 let chipBus=null,chipHP=null,chipLP=null,chipComp=null,masterClip=null;
-let masterLowShelf=null,masterPresence=null,masterHighShelf=null;
+let masterLowShelf=null,masterLowMidCut=null,masterPresence=null,masterHighShelf=null;
 let delayL=null,delayR=null,delayFbL=null,delayFbR=null,delayPanL=null,delayPanR=null,pumpGain=null;
 let oscA=null,oscB=null,aGain=null,bGain=null,cvGain=null,sub=null,subGain=null,harm=[];
+let sharedNoiseBuffer=null;
 let audioReady=false,lastClock=0,clockStep=0;
 
 // Everything belongs to one pitch universe.
@@ -3504,6 +3659,46 @@ function auditResolvedSemi(semi,snap,whenMs){
 }
 const impactGate=new Map();
 let musicEpoch=0;
+let audioPerfAnchorMs=0;
+let audioCtxAnchorSec=0;
+let audioAnchorAtPerfMs=0;
+
+function syncAudioClock(perfNow=nowMs()){
+  if(!audioReady||!AC)return;
+  // IMPORTANT: scheduling uses AC.currentTime sampled at the SAME JS instant
+  // as performance.now(). getOutputTimestamp() is intentionally NOT used here:
+  // it represents output-device presentation time and includes output latency.
+  audioPerfAnchorMs=perfNow;
+  audioCtxAnchorSec=AC.currentTime;
+  audioAnchorAtPerfMs=perfNow;
+}
+function audioTimeForMs(whenMs=nowMs()){
+  if(!audioReady||!AC)return 0;
+  const perfNow=nowMs();
+  if(!audioPerfAnchorMs)syncAudioClock(perfNow);
+  const mapped=audioCtxAnchorSec+(whenMs-audioPerfAnchorMs)/1000;
+  return Math.max(AC.currentTime+.006,mapped);
+}
+
+function initSharedNoiseBuffer(){
+  if(!AC||sharedNoiseBuffer)return;
+  const seconds=2.5,n=Math.floor(AC.sampleRate*seconds);
+  sharedNoiseBuffer=AC.createBuffer(1,n,AC.sampleRate);
+  const d=sharedNoiseBuffer.getChannelData(0);
+  for(let i=0;i<n;i++)d[i]=Math.random()*2-1;
+}
+function sharedNoiseSource(){
+  initSharedNoiseBuffer();
+  const src=AC.createBufferSource();
+  src.buffer=sharedNoiseBuffer;
+  return src;
+}
+function startNoiseSlice(src,t,dur){
+  const total=sharedNoiseBuffer?sharedNoiseBuffer.duration:2.5;
+  const maxOff=Math.max(.001,total-dur-.01);
+  const off=Math.random()*maxOff;
+  src.start(t,off,dur);
+}
 
 function makeImpulse(sec=2.45,decay=2.7){
   const n=Math.floor(AC.sampleRate*sec),b=AC.createBuffer(2,n,AC.sampleRate);
@@ -3520,13 +3715,15 @@ function makeImpulse(sec=2.45,decay=2.7){
 function initAudio(){
   if(audioReady)return;
   AC=new (AudioContext||webkitAudioContext)();
+  initSharedNoiseBuffer();
 
-  master=AC.createGain();master.gain.value=1.48;
-  dryBus=AC.createGain();dryBus.gain.value=1.20;
-  spaceBus=AC.createGain();spaceBus.gain.value=1.18;
+  // V29 gain staging: headroom first, then controlled saturation at the end.
+  master=AC.createGain();master.gain.value=1.08;
+  dryBus=AC.createGain();dryBus.gain.value=.86;
+  spaceBus=AC.createGain();spaceBus.gain.value=.72;
   // Dedicated drum path. v3 sent CLOSED HAT through a 5.4kHz high-pass and
   // then the ambience low-pass, frequently deleting the hat's useful band.
-  drumBus=AC.createGain();drumBus.gain.value=1.82;
+  drumBus=AC.createGain();drumBus.gain.value=1.08;
   drumComp=AC.createDynamicsCompressor();
   drumComp.threshold.value=-24;drumComp.knee.value=12;drumComp.ratio.value=3.2;
   drumComp.attack.value=.005;drumComp.release.value=.14;
@@ -3538,8 +3735,8 @@ function initAudio(){
   subComp=AC.createDynamicsCompressor();
   bodySat=AC.createWaveShaper();
 
-  subBus.gain.value=1.10;
-  bodyBus.gain.value=.90;
+  subBus.gain.value=.88;
+  bodyBus.gain.value=.82;
 
   subComp.threshold.value=-24;
   subComp.knee.value=18;
@@ -3562,14 +3759,14 @@ function initAudio(){
   airShelf=AC.createBiquadFilter();
   airComp=AC.createDynamicsCompressor();
 
-  airBus.gain.value=.82;
+  airBus.gain.value=.60;
   airHP.type="highpass";
   airHP.frequency.value=4200;
   airHP.Q.value=.55;
 
   airShelf.type="highshelf";
-  airShelf.frequency.value=7200;
-  airShelf.gain.value=3.4;
+  airShelf.frequency.value=7600;
+  airShelf.gain.value=2.4;
 
   airComp.threshold.value=-30;
   airComp.knee.value=22;
@@ -3582,12 +3779,12 @@ function initAudio(){
   acidComp=AC.createDynamicsCompressor();
   acidTone=AC.createBiquadFilter();
 
-  acidBus.gain.value=1.18;
+  acidBus.gain.value=.72;
 
   acidTone.type="peaking";
-  acidTone.frequency.value=1450;
-  acidTone.Q.value=.68;
-  acidTone.gain.value=2.6;
+  acidTone.frequency.value=1320;
+  acidTone.Q.value=.72;
+  acidTone.gain.value=1.6;
 
   acidComp.threshold.value=-22;
   acidComp.knee.value=16;
@@ -3601,7 +3798,7 @@ function initAudio(){
   chipLP=AC.createBiquadFilter();
   chipComp=AC.createDynamicsCompressor();
 
-  chipBus.gain.value=.82;
+  chipBus.gain.value=.52;
   chipHP.type="highpass";chipHP.frequency.value=165;chipHP.Q.value=.55;
   chipLP.type="lowpass";chipLP.frequency.value=7600;chipLP.Q.value=.42;
 
@@ -3610,36 +3807,39 @@ function initAudio(){
   chipComp.ratio.value=2.4;
   chipComp.attack.value=.004;
   chipComp.release.value=.10;
-  filter=AC.createBiquadFilter();filter.type="lowpass";filter.frequency.value=3300;filter.Q.value=.62;
-  comp=AC.createDynamicsCompressor();comp.threshold.value=-24;comp.knee.value=20;comp.ratio.value=3.8;comp.attack.value=.006;comp.release.value=.34;
+  filter=AC.createBiquadFilter();filter.type="lowpass";filter.frequency.value=3100;filter.Q.value=.58;
+  comp=AC.createDynamicsCompressor();comp.threshold.value=-17;comp.knee.value=14;comp.ratio.value=2.35;comp.attack.value=.012;comp.release.value=.20;
   masterLowShelf=AC.createBiquadFilter();
-  masterLowShelf.type="lowshelf";masterLowShelf.frequency.value=118;masterLowShelf.gain.value=3.2;
+  masterLowShelf.type="lowshelf";masterLowShelf.frequency.value=92;masterLowShelf.gain.value=1.7;
+  masterLowMidCut=AC.createBiquadFilter();
+  masterLowMidCut.type="peaking";masterLowMidCut.frequency.value=315;masterLowMidCut.Q.value=.78;masterLowMidCut.gain.value=-1.8;
   masterPresence=AC.createBiquadFilter();
-  masterPresence.type="peaking";masterPresence.frequency.value=2350;masterPresence.Q.value=.85;masterPresence.gain.value=1.8;
+  masterPresence.type="peaking";masterPresence.frequency.value=2700;masterPresence.Q.value=.82;masterPresence.gain.value=1.25;
   masterHighShelf=AC.createBiquadFilter();
-  masterHighShelf.type="highshelf";masterHighShelf.frequency.value=5600;masterHighShelf.gain.value=2.2;
+  masterHighShelf.type="highshelf";masterHighShelf.frequency.value=7800;masterHighShelf.gain.value=1.55;
   masterClip=AC.createWaveShaper();
   const masterCurve=new Float32Array(4096);
   for(let i=0;i<masterCurve.length;i++){
     const x=i/(masterCurve.length-1)*2-1;
-    masterCurve[i]=Math.tanh(x*1.18)/Math.tanh(1.18);
+    masterCurve[i]=Math.tanh(x*1.07)/Math.tanh(1.07);
   }
   masterClip.curve=masterCurve;
   masterClip.oversample="4x";
 
-  rev=AC.createConvolver();rev.buffer=makeImpulse(2.15,3.05);
+  rev=AC.createConvolver();rev.buffer=makeImpulse(1.85,3.35);
   const revHP=AC.createBiquadFilter();revHP.type="highpass";revHP.frequency.value=260;revHP.Q.value=.55;
   const revLP=AC.createBiquadFilter();revLP.type="lowpass";revLP.frequency.value=6900;revLP.Q.value=.45;
-  revGain=AC.createGain();revGain.gain.value=.34;
+  revGain=AC.createGain();revGain.gain.value=.24;
 
   // Alternating pan-delay sound field. Cross-feedback moves echoes L -> R -> L.
   delayL=AC.createDelay(1.4);delayR=AC.createDelay(1.4);
-  delayL.delayTime.value=.259;delayR.delayTime.value=.388;
+  // 124 BPM: ~1/8 and dotted-1/8. Tight rhythmic space instead of wash.
+  delayL.delayTime.value=.242;delayR.delayTime.value=.363;
   const delayToneL=AC.createBiquadFilter(),delayToneR=AC.createBiquadFilter();
   delayToneL.type="lowpass";delayToneL.frequency.value=4800;
   delayToneR.type="lowpass";delayToneR.frequency.value=4200;
   delayFbL=AC.createGain();delayFbR=AC.createGain();
-  delayFbL.gain.value=.31;delayFbR.gain.value=.27;
+  delayFbL.gain.value=.22;delayFbR.gain.value=.19;
   delayPanL=AC.createStereoPanner?AC.createStereoPanner():null;
   delayPanR=AC.createStereoPanner?AC.createStereoPanner():null;
   if(delayPanL)delayPanL.pan.value=-.72;
@@ -3677,7 +3877,7 @@ function initAudio(){
 
   dryBus.connect(master);spaceBus.connect(master);
   drumBus.connect(drumComp);drumComp.connect(master);
-  master.connect(masterLowShelf);masterLowShelf.connect(masterPresence);masterPresence.connect(masterHighShelf);masterHighShelf.connect(comp);comp.connect(masterClip);masterClip.connect(AC.destination);
+  master.connect(masterLowShelf);masterLowShelf.connect(masterLowMidCut);masterLowMidCut.connect(masterPresence);masterPresence.connect(masterHighShelf);masterHighShelf.connect(comp);comp.connect(masterClip);masterClip.connect(AC.destination);
 
   // Continuous "air": two soft digital tones only.
   oscA=AC.createOscillator();oscB=AC.createOscillator();
@@ -3700,6 +3900,7 @@ function initAudio(){
 
   musicEpoch=nowMs();
   audioReady=true;
+  syncAudioClock(musicEpoch);
 }
 function harmonicBar(now=nowMs()){
   // IMPORTANT: there is no wall-clock harmony anymore.
@@ -3726,19 +3927,23 @@ function setHarmonyIndex(index,now=nowMs()){
   }
 }
 function currentChord(){return HARMONY[song.harmonyIndex%HARMONY.length]}
-const SCORE_HARMONY_THRESHOLDS=[0,30000,120000,280000,420000];
-const SCORE_HARMONY_NAMES=["HOME","OPEN SKY","DISTANCE","NIGHT MEMORY","RETURN"];
+const SCORE_HARMONY_THRESHOLDS=[0,5000,15000,35000,80000,180000,350000];
+const SCORE_HARMONY_NAMES=["AIR","PULSE","BODY","DRIVE","LIFT","PEAK","BREAK"];
 const HARMONY_PROGRESSIONS=[
-  // 0–29,999: familiar home field.
+  // AIR — spacious Am / F / C / G, two bars per harmony.
+  [0,0,1,1,2,2,3,3, 0,0,1,1,2,2,3,3],
+  // PULSE — same home key, but the second half gains a small turnaround.
   [0,0,1,1,2,2,3,3, 4,4,5,5,6,6,7,7],
-  // 30,000+: same tonal world, reordered so the song clearly opens.
-  [5,5,3,3,2,2,4,4, 1,1,7,7,6,6,0,0],
-  // 120,000+: Dm/Bb/F/C family — first unmistakable emotional turn.
-  [8,8,9,9,1,1,2,2, 8,8,9,9,3,3,2,2],
-  // 280,000+: modulation into Cm/Ab/Eb/Gm — darker memory chapter.
-  [12,12,13,13,11,11,10,10, 12,12,14,14,13,13,10,10],
-  // 420,000+: D/Bm/G/A — brighter final ascent through stage fragments.
-  [15,15,17,17,18,18,16,16, 15,15,18,18,16,16,16,16]
+  // BODY — harmony starts moving once per bar.
+  [0,1,2,3,4,5,6,7, 0,1,2,3,5,6,7,4],
+  // DRIVE — reharmonized but still related: Dm / F / C / G motion.
+  [8,1,2,3,8,5,6,7, 8,1,2,3,5,6,0,7],
+  // LIFT — brighter F6/9 / C6/9 / Am9 / G(add6).
+  [5,6,4,7,5,6,4,7, 1,2,4,3,5,6,7,7],
+  // PEAK — clear modulation to D / Bm / G / A.
+  [15,17,18,16,15,17,18,16, 15,18,17,16,15,18,16,16],
+  // BREAK — first 8 bars darken, last 8 bars rebuild into the PEAK key.
+  [12,13,11,10,12,14,13,10, 15,17,18,16,15,18,16,16]
 ];
 function harmonyChapterForScore(score=state.score){
   let c=0;
@@ -3755,19 +3960,16 @@ function commitHarmonyChapter(chapter,now=nowMs()){
   song.harmonyChapterPending=chapter;
   song.harmonyChapterChanges++;
   song.harmonyChapterAt=now;
-  song.sceneShiftUntil=Math.max(song.sceneShiftUntil,now+1800);
-  song.sceneShiftLabel=`HARMONY / ${SCORE_HARMONY_NAMES[chapter]}`;
-  eventFlash(`${SCORE_HARMONY_NAMES[chapter]} / NEW PROGRESSION`,now,1500,.88);
-  causeFlash(`${SCORE_HARMONY_THRESHOLDS[chapter].toLocaleString()} SCORE`,`CHORD PROGRESSION SHIFT`,now,1500,.82);
-  // Clear old spatial residue so the modulation reads as intentional.
+  // SCORE ACT owns the visible transition. Harmony follows silently at the same boundary.
   if(audioReady){
-    delayFbL.gain.setTargetAtTime(.08,AC.currentTime,.02);
-    delayFbR.gain.setTargetAtTime(.08,AC.currentTime,.02);
-    revGain.gain.setTargetAtTime(.22,AC.currentTime,.04);
+    delayFbL.gain.setTargetAtTime(.07,AC.currentTime,.02);
+    delayFbR.gain.setTargetAtTime(.07,AC.currentTime,.02);
+    revGain.gain.setTargetAtTime(.18,AC.currentTime,.04);
   }
   return true;
 }
 function maybeAdvanceHarmonyChapter(step,bar,now=nowMs()){
+  if(state.mode!==MODE.PLAY)return;
   const target=harmonyChapterForScore(state.score);
   song.harmonyChapterPending=target;
   // Musical changes wait for a four-bar boundary instead of jumping mid-phrase.
@@ -3874,18 +4076,18 @@ function chordToneFor(x,y,now=nowMs(),offset=0){
   return semi;
 }
 function quantizedTime(now=nowMs(),division=32){
-  // 32nd-note quantization keeps collision/sound causality tactile:
-  // at ~88–94 BPM latency stays below ~85 ms.
+  // All reactive notes derive from the SAME epoch as the master transport.
+  // division=16 -> 16th grid, division=32 -> 32nd grid, etc.
   const unit=60000/song.bpm/(division/4);
   if(!musicEpoch)musicEpoch=now;
   const elapsed=Math.max(0,now-musicEpoch);
-  return musicEpoch+Math.ceil(elapsed/unit)*unit;
+  return musicEpoch+Math.ceil((elapsed-0.001)/unit)*unit;
 }
 
 
 function deepSubHit(freq=52,vel=.5,whenMs=nowMs(),dur=.42){
   if(!audioReady)return;
-  const t=AC.currentTime+Math.max(0,(whenMs-nowMs())/1000);
+  const t=audioTimeForMs(whenMs);
   const osc=AC.createOscillator(),g=AC.createGain();
   osc.type="sine";
   osc.frequency.setValueAtTime(freq*1.10,t);
@@ -3899,7 +4101,7 @@ function deepSubHit(freq=52,vel=.5,whenMs=nowMs(),dur=.42){
 
 function mellowBodyBass(semi,vel=.4,whenMs=nowMs(),dur=.34,pan=0){
   if(!audioReady)return;
-  const t=AC.currentTime+Math.max(0,(whenMs-nowMs())/1000);
+  const t=audioTimeForMs(whenMs);
   const f=65.406*Math.pow(2,semi/12);
   const o1=AC.createOscillator(),o2=AC.createOscillator();
   const g1=AC.createGain(),g2=AC.createGain(),lp=AC.createBiquadFilter(),env=AC.createGain();
@@ -3922,7 +4124,7 @@ function mellowBodyBass(semi,vel=.4,whenMs=nowMs(),dur=.34,pan=0){
 
 function lowWarmPad(semi,vel=.16,whenMs=nowMs(),dur=1.8,pan=0){
   if(!audioReady)return;
-  const t=AC.currentTime+Math.max(0,(whenMs-nowMs())/1000);
+  const t=audioTimeForMs(whenMs);
   const f=65.406*Math.pow(2,semi/12);
   const o=AC.createOscillator(),lp=AC.createBiquadFilter(),g=AC.createGain();
   o.type="triangle";o.frequency.value=f;
@@ -3941,7 +4143,7 @@ function lowWarmPad(semi,vel=.16,whenMs=nowMs(),dur=1.8,pan=0){
 
 function airShimmer(semi,vel=.18,whenMs=nowMs(),dur=.42,pan=0){
   if(!audioReady||!airBus)return;
-  const t=AC.currentTime+Math.max(0,(whenMs-nowMs())/1000);
+  const t=audioTimeForMs(whenMs);
   const f=65.406*Math.pow(2,semi/12);
 
   const o1=AC.createOscillator(),o2=AC.createOscillator();
@@ -3970,30 +4172,15 @@ function airShimmer(semi,vel=.18,whenMs=nowMs(),dur=.42,pan=0){
 
 function airNoise(vel=.12,whenMs=nowMs(),dur=.16,pan=0){
   if(!audioReady||!airBus)return;
-  const t=AC.currentTime+Math.max(0,(whenMs-nowMs())/1000);
-  const len=Math.max(128,Math.floor(AC.sampleRate*dur));
-  const b=AC.createBuffer(1,len,AC.sampleRate),d=b.getChannelData(0);
-
-  for(let i=0;i<len;i++){
-    const x=1-i/len;
-    d[i]=(Math.random()*2-1)*Math.pow(x,1.8);
-  }
-
-  const s=AC.createBufferSource(),bp=AC.createBiquadFilter(),g=AC.createGain();
+  const t=audioTimeForMs(whenMs);
+  const src=sharedNoiseSource(),bp=AC.createBiquadFilter(),g=AC.createGain();
   bp.type="bandpass";bp.frequency.value=9800;bp.Q.value=.72;
-
   g.gain.setValueAtTime(.0001,t);
   g.gain.exponentialRampToValueAtTime(.010*vel,t+.003);
   g.gain.exponentialRampToValueAtTime(.0001,t+dur);
-
-  s.buffer=b;s.connect(bp);bp.connect(g);
-
-  if(AC.createStereoPanner){
-    const p=AC.createStereoPanner();p.pan.value=pan;
-    g.connect(p);p.connect(airBus);
-  }else g.connect(airBus);
-
-  s.start(t);s.stop(t+dur+.02);
+  src.connect(bp);bp.connect(g);
+  if(AC.createStereoPanner){const p=AC.createStereoPanner();p.pan.value=pan;g.connect(p);p.connect(airBus)}else g.connect(airBus);
+  startNoiseSlice(src,t,dur+.01);
 }
 
 function glassAirTick(semi,vel=.12,whenMs=nowMs(),pan=0){
@@ -4004,7 +4191,7 @@ function glassAirTick(semi,vel=.12,whenMs=nowMs(),pan=0){
 
 function grooveKick(vel=1,whenMs=nowMs()){
   if(!audioReady)return;
-  const t=AC.currentTime+Math.max(0,(whenMs-nowMs())/1000);
+  const t=audioTimeForMs(whenMs);
 
   const sub=AC.createOscillator(),sg=AC.createGain();
   sub.type="sine";
@@ -4037,146 +4224,12 @@ function grooveKick(vel=1,whenMs=nowMs()){
 }
 
 
-function acidPressure(vel=.5,whenMs=nowMs(),pan=0){
-  if(!audioReady)return;
-  const t=AC.currentTime+Math.max(0,(whenMs-nowMs())/1000);
-  const chord=consonantChordTones(whenMs);
-  const semi=chord[0]-24;
-  const hz=Math.max(36,65.406*Math.pow(2,semi/12));
-
-  const o=AC.createOscillator(),f=AC.createBiquadFilter(),g=AC.createGain();
-  o.type="sawtooth";o.frequency.setValueAtTime(hz,t);
-  f.type="bandpass";f.Q.value=11;
-  f.frequency.setValueAtTime(620,t);
-  f.frequency.exponentialRampToValueAtTime(1750,t+.055);
-  f.frequency.exponentialRampToValueAtTime(380,t+.17);
-  g.gain.setValueAtTime(.0001,t);
-  g.gain.exponentialRampToValueAtTime(.034*vel,t+.003);
-  g.gain.exponentialRampToValueAtTime(.0001,t+.19);
-  o.connect(f);f.connect(g);
-  if(AC.createStereoPanner){
-    const p=AC.createStereoPanner();p.pan.value=pan;g.connect(p);p.connect(dryBus);
-  }else g.connect(dryBus);
-  o.start(t);o.stop(t+.21);
-}
-
-function acidClap(vel=.45,whenMs=nowMs(),pan=0){
-  if(!audioReady)return;
-  const t=AC.currentTime+Math.max(0,(whenMs-nowMs())/1000);
-  const len=Math.max(64,Math.floor(AC.sampleRate*.085));
-  const b=AC.createBuffer(1,len,AC.sampleRate),d=b.getChannelData(0);
-  for(let i=0;i<len;i++){
-    const burst=((i<160)||(i>330&&i<480)||(i>620&&i<760))?1:.32;
-    d[i]=(Math.random()*2-1)*burst*Math.pow(1-i/len,2.1);
-  }
-  const s=AC.createBufferSource(),bp=AC.createBiquadFilter(),g=AC.createGain();
-  bp.type="bandpass";bp.frequency.value=2200;bp.Q.value=.75;
-  g.gain.setValueAtTime(.0001,t);
-  g.gain.exponentialRampToValueAtTime(.034*vel,t+.002);
-  g.gain.exponentialRampToValueAtTime(.0001,t+.090);
-  s.buffer=b;s.connect(bp);bp.connect(g);
-  if(AC.createStereoPanner){
-    const p=AC.createStereoPanner();p.pan.value=pan;g.connect(p);p.connect(dryBus);
-  }else g.connect(dryBus);
-  s.start(t);s.stop(t+.10);
-}
-
-function acidBeatHit(vel=.44,whenMs=nowMs(),accent=false,pan=0){
-  if(!audioReady)return;
-  const t=AC.currentTime+Math.max(0,(whenMs-nowMs())/1000);
-  const chord=consonantChordTones(whenMs);
-  const rootSemi=chord[0]-24;
-  const fifthSemi=(chord[2]??chord[0])-24;
-  const startSemi=accent?fifthSemi:rootSemi;
-  const endSemi=rootSemi-12;
-  const startF=65.406*Math.pow(2,startSemi/12);
-  const endF=65.406*Math.pow(2,endSemi/12);
-
-  const o=AC.createOscillator(),f=AC.createBiquadFilter(),g=AC.createGain();
-  o.type="sawtooth";
-  o.frequency.setValueAtTime(Math.max(35,startF),t);
-  o.frequency.exponentialRampToValueAtTime(Math.max(28,endF),t+.10);
-  f.type="lowpass";f.Q.value=accent?13:9;
-  f.frequency.setValueAtTime(accent?2100:1350,t);
-  f.frequency.exponentialRampToValueAtTime(280,t+.14);
-  g.gain.setValueAtTime(.0001,t);
-  g.gain.exponentialRampToValueAtTime(.042*vel,t+.002);
-  g.gain.exponentialRampToValueAtTime(.0001,t+.16);
-  o.connect(f);f.connect(g);
-  if(AC.createStereoPanner){
-    const p=AC.createStereoPanner();p.pan.value=pan;g.connect(p);p.connect(dryBus);
-  }else g.connect(dryBus);
-  o.start(t);o.stop(t+.18);
-}
-
-function cosmicPadChord(chord,mellow=.5,section=0,whenMs=nowMs()){
-  if(!audioReady)return;
-  const qt=whenMs;
-  const core=consonantChordTones(whenMs);
-  let voicing=[
-    core[0]-12,
-    core[1],
-    core[2]+12,
-    (core[3]??core[0])+24
-  ];
-  if(section===2)voicing=[core[0]-12,core[1],core[2]+12];
-
-  // Do not let sustained pitch bleed into the next chord.
-  // Space comes from reverb/delay, not from overlapping incompatible notes.
-  const barSec=60000/song.bpm*4/1000;
-  const maxDur=barSec*.78;
-  voicing.forEach((semi,i)=>{
-    const wanted=1.20+mellow*.72+(i>=3?.10:0);
-    const dur=Math.min(wanted,maxDur);
-    warmVoiceSemi(semi,.040+mellow*.020,dur,(i-2)*(.15+mellow*.035),-.30,qt);
-  });
-  if(mellow>.58){
-    sparkleVoiceSemi(chord[4]+36,.040+mellow*.020,.46,.48,qt+60000/song.bpm*.75);
-  }
-}
-
-function grooveRim(vel=.34,whenMs=nowMs(),pan=.14){
-  if(!audioReady)return;
-  const t=AC.currentTime+Math.max(0,(whenMs-nowMs())/1000);
-  const len=Math.max(128,Math.floor(AC.sampleRate*.095));
-  const b=AC.createBuffer(1,len,AC.sampleRate),d=b.getChannelData(0);
-  for(let i=0;i<len;i++){
-    const env=Math.pow(1-i/len,2.7);
-    d[i]=(Math.random()*2-1)*env;
-  }
-  const s=AC.createBufferSource(),bp=AC.createBiquadFilter(),g=AC.createGain();
-  bp.type="bandpass";bp.frequency.value=1450;bp.Q.value=.65;
-  g.gain.setValueAtTime(.0001,t);
-  g.gain.exponentialRampToValueAtTime(.030*vel,t+.002);
-  g.gain.exponentialRampToValueAtTime(.0001,t+.10);
-  s.buffer=b;s.connect(bp);bp.connect(g);
-  if(AC.createStereoPanner){
-    const p=AC.createStereoPanner();p.pan.value=pan;g.connect(p);p.connect(dryBus);
-  }else g.connect(dryBus);
-  s.start(t);s.stop(t+.11);
-}
-function grooveHat(vel=.22,whenMs=nowMs(),pan=0){
-  if(!audioReady)return;
-  const t=AC.currentTime+Math.max(0,(whenMs-nowMs())/1000);
-  const len=Math.max(64,Math.floor(AC.sampleRate*.030));
-  const b=AC.createBuffer(1,len,AC.sampleRate),d=b.getChannelData(0);
-  for(let i=0;i<len;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/len,2.7);
-  const s=AC.createBufferSource(),hp=AC.createBiquadFilter(),g=AC.createGain();
-  hp.type="highpass";hp.frequency.value=5400;hp.Q.value=.65;
-  g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(.0062*vel,t+.001);
-  g.gain.exponentialRampToValueAtTime(.0001,t+.030);
-  s.buffer=b;s.connect(hp);hp.connect(g);
-  if(AC.createStereoPanner){
-    const p=AC.createStereoPanner();p.pan.value=pan;g.connect(p);p.connect(filter);
-  }else g.connect(filter);
-  s.start(t);s.stop(t+.04);
-}
 function mellowBass(semi,vel=.30,dur=.38,whenMs=nowMs()){
   const harmonySnap=harmonySnapshotForWhen(whenMs);
   semi=snapSemiToSnapshot(semi,harmonySnap);
   auditResolvedSemi(semi,harmonySnap,whenMs);
   if(!audioReady)return;
-  const t=AC.currentTime+Math.max(0,(whenMs-nowMs())/1000);
+  const t=audioTimeForMs(whenMs);
   const f=65.406*Math.pow(2,semi/12);
   const o1=AC.createOscillator(),o2=AC.createOscillator(),g=AC.createGain();
   o1.type="sine";o2.type="triangle";o1.frequency.value=f;o2.frequency.value=f*2;
@@ -4194,7 +4247,7 @@ function sparkleVoiceSemi(semi,vel=.16,dur=.34,pan=0,whenMs=nowMs()){
   semi=snapSemiToSnapshot(semi,harmonySnap);
   auditResolvedSemi(semi,harmonySnap,whenMs);
   if(!audioReady)return;
-  const t=AC.currentTime+Math.max(0,(whenMs-nowMs())/1000);
+  const t=audioTimeForMs(whenMs);
   const f=65.406*Math.pow(2,semi/12);
   const o1=AC.createOscillator(),o2=AC.createOscillator(),o3=AC.createOscillator();
   const g1=AC.createGain(),g2=AC.createGain(),g3=AC.createGain(),env=AC.createGain();
@@ -4236,17 +4289,13 @@ function orbitMotif(variant=0,whenMs=nowMs(),intensity=1){
 }
 
 // Backward compatibility: old call-sites now use the restrained motif.
-function sparkleRiff(variant=0,whenMs=nowMs()){
-  orbitMotif(variant,whenMs,1);
-}
-
 function memoryVoiceSemi(semi,vel=.30,dur=.72,pan=0,whenMs=nowMs(),aged=0){
   if(!audioReady)return;
   const snap=harmonySnapshotForWhen(whenMs);
   semi=snapSemiToSnapshot(semi,snap);
   auditResolvedSemi(semi,snap,whenMs);
 
-  const t=AC.currentTime+Math.max(0,(whenMs-nowMs())/1000);
+  const t=audioTimeForMs(whenMs);
   const f=65.406*Math.pow(2,semi/12);
 
   // Felt / intimate key voice: fundamental + muted octave + tiny hammer noise.
@@ -4291,7 +4340,7 @@ function cryingLeadSemi(semi,vel=.34,dur=.62,pan=.06,whenMs=nowMs(),lift=0){
   semi=snapSemiToSnapshot(semi,harmonySnap);
   auditResolvedSemi(semi,harmonySnap,whenMs);
   if(!audioReady)return;
-  const t=AC.currentTime+Math.max(0,(whenMs-nowMs())/1000);
+  const t=audioTimeForMs(whenMs);
   const f=65.406*Math.pow(2,semi/12);
 
   const main=AC.createOscillator(),soft=AC.createOscillator(),lfo=AC.createOscillator();
@@ -4330,8 +4379,7 @@ function warmVoiceSemi(semi,vel=.25,dur=.28,pan=0,brightness=.25,whenMs=nowMs())
   auditResolvedSemi(semi,harmonySnap,whenMs);
   if(!audioReady)return;
   audioStats.voices++;
-  const delaySec=Math.max(0,(whenMs-nowMs())/1000);
-  const t=AC.currentTime+delaySec;
+  const t=audioTimeForMs(whenMs);
   const freq=65.406*Math.pow(2,semi/12);
 
   const o1=AC.createOscillator(),o2=AC.createOscillator(),o3=AC.createOscillator();
@@ -4410,18 +4458,6 @@ function musicalAccent(kind,power=.35,x=ball.x,y=ball.y,now=nowMs()){
   else if(kind==="transfer")role=GUIDED_ROLE.GLASS;
   if(role>0 && !song.panelUnlocked[role])role=GUIDED_ROLE.TIDE;
   queueGuidedIntent(role,.55+power*.35,now,true);
-}
-function musicVoice(freq,vel=.2,dur=.16,pan=0,bright=0){
-  warmVoice(freq,vel,dur,pan,bright,quantizedTime(nowMs(),16));
-}
-function digitalClick(strength=.25,pan=0){
-  // Old "digital click" is intentionally gone. Use a tiny high chord tone.
-  const now=nowMs(),semi=chordToneFor(FIELD.center+pan*250,FIELD.top+80,now,3);
-  warmVoiceSemi(semi,.035+.05*strength,.095,pan,.32,quantizedTime(now,32));
-}
-function shotVoice(freq,vel=.4,type="sine",dur=.07,pan=0){
-  // Legacy call sites now route into the one musical instrument.
-  warmVoice(freq,.05+vel*.22,Math.max(.11,dur*2.4),pan,type==="square"?.25:.10,quantizedTime(nowMs(),32));
 }
 function basePitch(){
   const semi=chordToneFor(ball.x,ball.y,nowMs(),0);
@@ -6197,13 +6233,6 @@ function resetBonusGame(now){
   }
 }
 
-function breakoutLevelForBroken(n){
-  if(n>=24)return 6;if(n>=20)return 5;if(n>=16)return 4;
-  if(n>=12)return 3;if(n>=8)return 2;if(n>=4)return 1;return 0;
-}
-function breakoutPartName(level){
-  return DRUM_BUILD_NAMES[clamp(level,0,DRUM_BUILD_NAMES.length-1)];
-}
 
 function featureRewardBurst(now){
   song.dataBurst=1;
@@ -6246,12 +6275,17 @@ function registerBreakoutBlockHit(block,now){
 
   const earned=breakoutLevelForBroken(bonusGame.broken);
   if(earned>song.drumBuildPending){
-    song.drumBuildPending=earned;song.drumBuildMax=Math.max(song.drumBuildMax,earned);
-    song.sceneShiftUntil=now+1150;song.sceneShiftLabel=`NEXT BAR / ${breakoutPartName(earned)}`;
-    eventFlash(`${breakoutPartName(earned)} READY`,now,900,.82);
-    causeFlash(`${bonusGame.broken}/24 BLOCKS`,`NEXT BAR → ${breakoutPartName(earned)}`,now,1050,.82);
+    song.drumBuildPending=earned;
+    song.drumBuildMax=Math.max(song.drumBuildMax,earned);
+    const part=DRUM_BUILD_NAMES[earned]||"DRUM";
+    song.sceneShiftUntil=now+1350;
+    song.sceneShiftLabel=`NEXT BAR / ${part}`;
+    eventFlash(`${part} READY`,now,1000,.88);
+    causeFlash(`${bonusGame.broken}/24 BLOCKS`,`NEXT BAR → ${part}`,now,1150,.88);
     song.twPleasureCharge=clamp(song.twPleasureCharge+.10,0,1);
-  }else eventFlash(`BREAK ${bonusGame.broken}/24`,now,260,.32);
+  }else{
+    eventFlash(`BREAK ${bonusGame.broken}/24`,now,260,.32);
+  }
 
   if(audioReady){
     const snap=snapshotChord(),degree=(block.col+block.row)%5;
@@ -6265,7 +6299,8 @@ function registerBreakoutBlockHit(block,now){
   const blockPower=clamp(.38+bonusGame.combo*.035,0,.78);
   juiceReward("break",block.x,block.y,blockPower,bonusGame.combo>=4?`×${bonusGame.combo}`:"");
   if(bonusGame.broken%4===0){
-    juiceReward("power",block.x,block.y,.82,breakoutPartName(breakoutLevelForBroken(bonusGame.broken)));
+    const level=breakoutLevelForBroken(bonusGame.broken);
+    juiceReward("power",block.x,block.y,.84,DRUM_BUILD_NAMES[level]||`${bonusGame.broken} / 24`);
   }
   if(bonusGame.combo>=6){
     bonusGame.feverUntil=Math.max(bonusGame.feverUntil,now+2600);
@@ -6282,6 +6317,8 @@ function registerBreakoutBlockHit(block,now){
     miniSave.drumBuild=6;
     if(ARCADE15.active==="BREAKOUT"){
       juiceReward("power",495,330,1,"FULL GROOVE");
+      eventFlash("FULL GROOVE READY",now,1800,1);
+      causeFlash("24 / 24","NEXT BAR → FULL DRUM GROOVE",now,1900,1);
       arcadeFinish("BREAKOUT",now,"FULL GROOVE");
       return;
     }
@@ -6904,14 +6941,11 @@ let storyIntroMusic="";
 
 function storyAllClear(){return (miniSave.storyStage|0)>=STORY_STAGES.length}
 function currentStoryDef(){
-  const idx=storyAllClear()
-    ? ((miniSave.encoreIndex|0)%STORY_STAGES.length)
-    : clamp(miniSave.storyStage|0,0,STORY_STAGES.length-1);
-  return STORY_STAGES[idx];
+  return STORY_STAGES[clamp(miniSave.storyStage|0,0,STORY_STAGES.length-1)];
 }
 function storyProgressText(){
-  if(storyAllClear())return `ALL STAGES CLEAR · ENCORE ${(miniSave.encoreIndex|0)+1}`;
-  return `STAGE ${(miniSave.storyStage|0)+1} / ${STORY_STAGES.length}`;
+  const round=Math.max(0,miniSave.storyCycles|0)+1;
+  return `ROUND ${round} · STAGE ${(miniSave.storyStage|0)+1} / ${STORY_STAGES.length}`;
 }
 
 const MINI_MUSIC_ROLE_INDEX=Object.fromEntries(STORY_STAGES.map((d,i)=>[d.id,i]));
@@ -6944,7 +6978,7 @@ function unlockMiniMusicRole(id,now){
   song.miniMusicMask=miniSave.musicMask;
   song.miniMusicDebutBit=bit;
   song.miniMusicDebutBars=8;
-  song.musicGetUntil=now+9200;
+  song.musicGetUntil=now+4200;
   song.musicGetTitle=wasOn?"MUSIC BOOST":"MUSIC GET";
   song.musicGetRole=def.music||id;
   song.musicGetText=def.musicText||"曲のアレンジが変化した";
@@ -6962,78 +6996,83 @@ function unlockMiniMusicRole(id,now){
 function scheduleMiniGameMusicLayers(step,bar,whenMs,snap){
   if(state.mode!==MODE.PLAY)return;
 
-  // 4 / UFOシューティング -> LEAD MELODY
-  if(miniMusicHas("SHOOTER") && bar%2===0){
-    const seq={0:0,3:2,6:4,10:3,14:4};
-    if(Object.prototype.hasOwnProperty.call(seq,step)){
-      const d=seq[step],boost=miniMusicDebutGain("SHOOTER");
-      ambientGlassSemi(chordTone(d,4,snap),.115*boost,.22,(step<8?-.24:.24),whenMs,.82);
-      warmVoiceSemi(chordTone(d,3,snap),.030*boost,.27,(step<8?-.12:.12),-.08,whenMs);
-    }
-  }
-
-  // 5 / カラー落ちもの -> CHORD PAD
-  if(miniMusicHas("DROP") && step===0){
-    const boost=miniMusicDebutGain("DROP");
-    [0,2,4].forEach((d,i)=>
-      warmVoiceSemi(chordTone(d,2+(i===2?1:0),snap),.030*boost,1.55,(i-1)*.26,-.16,whenMs+i*18)
-    );
-  }
-
-  // 6 / もぐらたたき -> PERCUSSION
-  if(miniMusicHas("MOLE")){
-    const boost=miniMusicDebutGain("MOLE");
-    if(step===3||step===11)drumPerc(.44*boost,whenMs,step===3?-.26:.26);
-    if(step===7||step===15)drumClap(.28*boost,whenMs);
-  }
-
-  // 7 / ホームラン競争 -> BASSLINE
-  if(miniMusicHas("HOMERUN")){
-    const bassMap={0:0,3:0,6:2,8:4,11:3,14:2};
-    if(Object.prototype.hasOwnProperty.call(bassMap,step)){
-      const d=bassMap[step],boost=miniMusicDebutGain("HOMERUN");
-      mellowBodyBass(chordTone(d,-2,snap),(.48+(step===0?.10:0))*boost,whenMs,.27,step<8?-.06:.06);
-      if((step===0||step===8)&&boost>1)deepSubHit(43,.20*boost,whenMs,.26);
-    }
-  }
-
-  // 8 / 金魚すくい -> SHIMMER
-  if(miniMusicHas("GOLDFISH") && (step===2||step===6||step===10||step===14)){
-    const d=[4,2,3,4][(step-2)/4|0],boost=miniMusicDebutGain("GOLDFISH");
-    ambientGlassSemi(chordTone(d,5,snap),.082*boost,.32,step<8?-.38:.38,whenMs,.95);
-    airShimmer(chordTone(d,5,snap),.095*boost,whenMs,.42,step<8?-.28:.28);
-  }
-
-  // 9 / クレーンゲーム -> HOOK MELODY
-  if(miniMusicHas("CRANE")){
-    const local=bar%2*16+step;
-    const hook={0:[0,3],4:[2,3],7:[4,3],10:[2,3],14:[3,4],18:[4,3],22:[2,3],27:[1,3],30:[0,4]};
-    if(hook[local]){
-      const [d,oct]=hook[local],boost=miniMusicDebutGain("CRANE");
-      chipPulse(chordTone(d,oct,snap),.50*boost,whenMs,.10,(local<16?-.20:.20),.90);
-      warmVoiceSemi(chordTone(d,oct-1,snap),.018*boost,.30,0,-.06,whenMs);
-    }
-  }
-
-  // 10 / だるま落とし -> BREAK FILLS / final arrangement punctuation
-  if(miniMusicHas("DARUMA")){
-    const boost=miniMusicDebutGain("DARUMA");
-    const debut=boost>1;
-    const fillBar=(bar%4===3)||(debut&&bar%2===1);
-    if(fillBar){
-      // The last half of the bar visibly "falls apart" and rebuilds like the toy.
-      if(step===8)drumOpenHat(.56*boost,whenMs,-.16);
-      if(step===10)drumClap(.34*boost,whenMs);
-      if(step===12){drumPerc(.42*boost,whenMs,-.22);chipNoise(.12*boost,whenMs,.020,.20);}
-      if(step===13)drumClap(.38*boost,whenMs);
-      if(step===14){drumOpenHat(.72*boost,whenMs,.18);drumPerc(.48*boost,whenMs,-.18);}
-      if(step===15){
-        drumClap(.58*boost,whenMs);
-        chipNoise(.24*boost,whenMs,.045,.28);
+  // 4 / UFO -> LEAD MELODY. Rotates with SHIMMER / HOOK to protect the top end.
+  {
+    const mix=scoreRoleGain("SHOOTER",bar);
+    if(mix>.025 && bar%2===0){
+      const seq={0:0,3:2,6:4,10:3,14:4};
+      if(Object.prototype.hasOwnProperty.call(seq,step)){
+        const d=seq[step];
+        ambientGlassSemi(chordTone(d,4,snap),.080*mix,.18,(step<8?-.20:.20),whenMs,.78);
+        warmVoiceSemi(chordTone(d,3,snap),.018*mix,.22,0,-.12,whenMs);
       }
-    }else if(step===14){
-      // Tiny preview on ordinary bars, so the permanent unlock remains audible.
-      drumOpenHat(.38*boost,whenMs,.10);
+    }
+  }
+
+  // 5 / COLOR DROP -> PAD. One bar out of two, not a permanent blanket.
+  {
+    const mix=scoreRoleGain("DROP",bar);
+    if(mix>.025 && step===0 && bar%2===0){
+      [0,2,4].forEach((d,i)=>
+        warmVoiceSemi(chordTone(d,2+(i===2?1:0),snap),.021*mix,1.16,(i-1)*.22,-.18,whenMs+i*14)
+      );
+    }
+  }
+
+  // 6 / MOLE -> PERCUSSION. Reinforces the master offbeat; never creates a second backbeat.
+  {
+    const mix=scoreRoleGain("MOLE",bar);
+    if(mix>.025 && (step===2||step===10))
+      drumPerc(.25*mix,whenMs,step===2?-.20:.20);
+  }
+
+  // 7 / HOMERUN -> BASSLINE. When active it OWNS the bass register.
+  {
+    const mix=scoreRoleGain("HOMERUN",bar);
+    if(mix>.025){
+      const bassMap={0:0,2:0,6:2,8:4,10:3,14:2};
+      if(Object.prototype.hasOwnProperty.call(bassMap,step)){
+        const d=bassMap[step];
+        mellowBodyBass(chordTone(d,-2,snap),(.40+(step===0?.08:0))*mix,whenMs,.23,0);
+        if((step===0||step===8)&&mix>1.05)deepSubHit(43,.15*mix,whenMs,.22);
+      }
+    }
+  }
+
+  // 8 / GOLDFISH -> SHIMMER. Rotated top voice.
+  {
+    const mix=scoreRoleGain("GOLDFISH",bar);
+    if(mix>.025 && (step===2||step===10)){
+      const d=step===2?4:3;
+      ambientGlassSemi(chordTone(d,5,snap),.060*mix,.26,step===2?-.38:.38,whenMs,.92);
+      airShimmer(chordTone(d,5,snap),.060*mix,whenMs,.30,step===2?-.28:.28);
+    }
+  }
+
+  // 9 / CRANE -> HOOK. Two-bar hook but only when its top-line slot is active.
+  {
+    const mix=scoreRoleGain("CRANE",bar);
+    if(mix>.025){
+      const local=bar%2*16+step;
+      const hook={0:[0,3],4:[2,3],7:[4,3],10:[2,3],14:[3,4],18:[4,3],22:[2,3],27:[1,3],30:[0,4]};
+      if(hook[local]){
+        const [d,oct]=hook[local];
+        chipPulse(chordTone(d,oct,snap),.30*mix,whenMs,.085,(local<16?-.18:.18),.84);
+      }
+    }
+  }
+
+  // 10 / DARUMA -> BREAK FILLS. Phrase-end only.
+  {
+    const mix=scoreRoleGain("DARUMA",bar);
+    if(mix>.025){
+      const debut=song.miniMusicDebutBars>0&&song.miniMusicDebutBit===miniMusicBit("DARUMA");
+      const fillBar=(bar%4===3)||(debut&&bar%2===1);
+      if(fillBar){
+        if(step===12)drumPerc(.25*mix,whenMs,-.20);
+        if(step===14){drumOpenHat(.36*mix,whenMs,.16);electronicaGrain(.18*mix,whenMs,.24,.72);}
+        if(step===15){drumPerc(.32*mix,whenMs,.12);electronicaGrain(.27*mix,whenMs,.36,.95);}
+      }
     }
   }
 }
@@ -7131,10 +7170,10 @@ function storyStartCurrent(now){
   miniSave.lastStageId=def.id;
   miniSave.gameMode=state.game||miniSave.gameMode||"A";
   writeMiniSave("STAGE START");
-  storyIntroUntil=now+2400;
-  storyIntroLabel=def.instruction||def.role||def.name;
+  storyIntroUntil=now+1450;
+  storyIntroLabel=`${def.name} — ${def.instruction||def.role||""}`;
   storyIntroSub=def.controls||"A / D + SPACE";
-  storyIntroMusic=`MUSIC → ${def.music||"ARRANGEMENT"}`;
+  storyIntroMusic=`${def.music||"ARRANGEMENT"}`;
 
   // Clean per-stage start; stage itself may still keep its internal checkpoint.
   if(def.id==="BREAKOUT"){
@@ -7146,6 +7185,12 @@ function storyStartCurrent(now){
     bonusGame.paddleX=495;bonusGame.paddleV=0;bonusGame.paddleW=142;
     bonusGame.ball={x:495,y:690,vx:250,vy:-375,r:10};
     bonusGame.feverUntil=0;
+
+    // BREAKOUT is a drum-building workshop on every round.
+    // Permanent DRUM GROOVE is temporarily deconstructed to the checkpoint level.
+    song.drumBuildPending=clamp(miniSave.drumBuild|0,0,6);
+    song.drumBuildActive=song.drumBuildPending;
+
     if(mask)eventFlash(`BREAKOUT / RESUME ${bonusGame.broken}/24`,now,950,.72);
   }else if(def.id==="DRIVE"){
     startRaceStage(now,song.transportBar,true);
@@ -7164,20 +7209,31 @@ function storyAdvance(id,now){
   const completed=STORY_STAGES.findIndex(s=>s.id===id);
   if(completed<0)return;
 
-  if(!storyAllClear() && completed===(miniSave.storyStage|0)){
+  if(completed===(miniSave.storyStage|0)){
     clearArcadeCheckpoint(id);
     miniSave.storyStage=completed+1;
     miniSave.storyClears=(miniSave.storyClears|0)+1;
+
     const frag=STORY_STAGES[completed].fragment;
     if(frag){
       state.eventText=`MEMORY / ${frag}`;
       state.eventUntil=now+1700;
       state.eventStrength=.78;
     }
-  }else if(storyAllClear()){
-    miniSave.encoreIndex=((miniSave.encoreIndex|0)+1)%STORY_STAGES.length;
+
+    if(miniSave.storyStage>=STORY_STAGES.length){
+      const keepMask=miniSave.musicMask|0;
+      resetMiniGameCycleFields(miniSave,{countCycle:true});
+      miniSave.musicMask=keepMask&0x3ff;
+      miniSave.drumBuild=(miniSave.musicMask&1)?6:0;
+      state.eventText=`MINIGAMES RESET / ROUND ${(miniSave.storyCycles|0)+1}`;
+      state.eventUntil=now+2400;
+      state.eventStrength=1;
+      song.sceneShiftUntil=now+2200;
+      song.sceneShiftLabel="MINIGAMES / NEW ROUND";
+    }
   }
-  writeMiniSave();
+  writeMiniSave("STORY ADVANCE");
 }
 
 function storyStageReward(id,now){
@@ -9797,7 +9853,7 @@ function drawBonus(){
 
   if(bonusGame.stage==="BREAKOUT"){
     text(`${bonusGame.broken}/24`,936,23,9,C.bg,"right",900);
-    text("CHAPTER 1 / BREAK BLOCKS → BUILD THE DRUMS",495,82,8,C.paper,"center",900);
+    text("CHAPTER 1 / EVERY 4 BLOCKS → NEW DRUM PART",495,82,8,C.paper,"center",900);
     text("PROGRESS IS SAVED AFTER EVERY BLOCK",495,105,5,C.cool,"center",820);
 
     const stages=[
@@ -10186,7 +10242,25 @@ function drawDataFX(now){
   ctx.restore();
 }
 
+function drawScoreActHUD(now){
+  const a=scoreActSpec(),next=scoreActNextThreshold();
+  const nextText=next===null?"MAX":`NEXT ${next.toLocaleString()}`;
+  text(`ACT ${song.scoreAct+1}/${SCORE_ACTS.length}  ${a.name}`,170,52,6.2,C.paper,"left",930);
+  text(`${a.change}  ·  ${nextText}`,170,72,4.6,C.muted,"left",820);
+
+  if(now<song.scoreActFlashUntil){
+    const remain=clamp((song.scoreActFlashUntil-now)/3200,0,1);
+    const fade=remain<.18?remain/.18:1;
+    ctx.save();
+    ctx.globalAlpha=.48+.52*fade;
+    text(`ACT ${song.scoreAct+1} / ${a.name}`,480,205,16,C.paper,"center",980);
+    text(a.change,480,238,6.2,C.accent,"center",920);
+    ctx.restore();
+  }
+}
+
 function overlay(now){
+  drawScoreActHUD(now);
   drawCauseStrip(now);
   if(state.cut>0||state.edgePulse>0){
     const upper=state.screen===SCREEN.UPPER;
@@ -10210,7 +10284,7 @@ function overlay(now){
     text("GAME OVER",480,350,9,C.muted,"center",850);
     text(String(state.score).padStart(7,"0"),480,420,38,C.paper,"center",850);
     text(`CLEAR  ${state.setsCleared}`,480,474,10,C.cool,"center",900);
-    if(now-state.overAt>1800)text("SPACE",480,535,8,C.accent,"center",900);
+    if(now-state.overAt>650)text("TAP SCREEN / SPACE",480,535,8,C.accent,"center",900);
     return;
   }
   if(now<state.surgeUntil){
@@ -10218,12 +10292,10 @@ function overlay(now){
     text(`CLEAR BONUS ×2  ${Math.max(0,(state.surgeUntil-now)/1000).toFixed(1)}s`,885,64,8,C.accent,"right",900);
   }
   if(now<song.musicGetUntil&&song.musicGetRole){
-    const a=clamp((song.musicGetUntil-now)/900,0,1);
-    ctx.save();ctx.globalAlpha=Math.min(1,.82+a*.18);
-    rect(180,70,600,118,C.bg);rect(180,70,600,118,null,C.accent,2.5);
-    text(song.musicGetTitle||"MUSIC GET",480,101,7,C.accent,"center",950);
-    text(`${song.musicGetRole} ADDED`,480,137,13,C.paper,"center",980);
-    text(song.musicGetText,480,168,5.2,C.cool,"center",860);
+    const remain=clamp((song.musicGetUntil-now)/4200,0,1);
+    ctx.save();ctx.globalAlpha=clamp(remain*1.7,.42,1);
+    text(`${song.musicGetTitle||"MUSIC GET"} / ${song.musicGetRole} ADDED`,480,146,8.6,C.accent,"center",970);
+    text(song.musicGetText,480,171,4.8,C.cool,"center",850);
     ctx.restore();
   }
   if(now<state.eventUntil&&state.eventText){
@@ -10257,20 +10329,19 @@ function updateMobileChrome(now){
   if(now-mobileUI.lastUpdate>55){
     mobileUI.lastUpdate=now;
     const stage=clamp(miniSave.storyStage|0,0,STORY_STAGES.length);
-    const def=currentStoryDef?.();
-    const modeText=state.mode===MODE.BONUS
+    const def=currentStoryDef?.(),act=scoreActSpec(),next=scoreActNextThreshold();
+    mobileUI.mode.textContent=state.mode===MODE.BONUS
       ? (def?.name||"MINIGAME")
-      : state.screen===SCREEN.UPPER?"UPPER / SYNTH":"LOWER / PINBALL";
-    mobileUI.mode.textContent=modeText;
+      : `ACT ${song.scoreAct+1} · ${act.name}`;
     mobileUI.score.textContent=String(state.score|0).padStart(7,"0");
     mobileUI.arrange.textContent=`${miniMusicCount()} / 10`;
-    mobileUI.role.textContent=miniSave.lastMusicRole||"AMBIENT ONLY";
-    mobileUI.stage.textContent=stage>=STORY_STAGES.length
-      ?"ALL STAGES CLEAR"
-      :`STAGE ${stage+1} / ${STORY_STAGES.length}`;
+    mobileUI.role.textContent=state.mode===MODE.BONUS
+      ? (def?.music||miniSave.lastMusicRole||"MINIGAME")
+      : `${act.change} / ${miniSave.lastMusicRole||"AMBIENT"}`;
+    const storyText=stage>=STORY_STAGES.length?"ALL STAGES CLEAR":`STAGE ${stage+1}/${STORY_STAGES.length}`;
+    mobileUI.stage.textContent=`${storyText} · ${next===null?"ACT MAX":`NEXT ACT ${next.toLocaleString()}`}`;
 
-    const p=stage>=STORY_STAGES.length?1:(stage/Math.max(1,STORY_STAGES.length));
-    mobileUI.progress.style.width=`${Math.round(p*100)}%`;
+    mobileUI.progress.style.width=`${Math.round(scoreActProgress()*100)}%`;
 
     const mask=(song.miniMusicMask|0)&0x3ff;
     mobileUI.dna.forEach((el,i)=>el.classList.toggle("on",!!(mask&(1<<i))));
@@ -10316,15 +10387,12 @@ function render(now){
   drawDataFX(now);
 
   if(state.mode===MODE.BONUS&&now<storyIntroUntil){
-    const life=clamp((storyIntroUntil-now)/2400,0,1);
+    const left=Math.max(0,storyIntroUntil-now);
+    const fade=clamp(left/320,0,1);
     ctx.save();
-    ctx.globalAlpha=Math.min(1,life*2.2);
-    rect(105,300,750,260,C.bg);
-    rect(105,300,750,260,null,C.accent,3);
-    text(storyIntroLabel,480,380,15,C.paper,"center",980);
-    text(storyIntroSub,480,438,7,C.cool,"center",900);
-    text(storyIntroMusic,480,492,7,C.accent,"center",930);
-    text("クリアすると、この音が本編の曲に永久追加",480,530,4.5,C.muted,"center",820);
+    ctx.globalAlpha=Math.min(1,.58+fade*.42);
+    text(storyIntroLabel,480,92,7.4,C.paper,"center",960);
+    text(`${storyIntroSub}  /  MUSIC ${storyIntroMusic}`,480,117,4.6,C.cool,"center",860);
     ctx.restore();
   }
 
@@ -10419,6 +10487,7 @@ function hardResetMiniSave(){
 async function startGame(option=titleOptions[menu]){
   initAudio();
   try{await AC.resume()}catch(_){}
+  if(audioReady)syncAudioClock(nowMs());
   if(audioReady&&master){
     const t=AC.currentTime;
     master.gain.cancelScheduledValues(t);
@@ -10467,6 +10536,17 @@ async function startGame(option=titleOptions[menu]){
   $("#title").classList.add("hidden");
   resetBall();
 }
+function returnFromGameOver(now=nowMs()){
+  if(state.mode!==MODE.OVER)return false;
+  if(now-state.overAt<650)return false;
+  clearDirectTouch();
+  state.mode=MODE.TITLE;
+  song.epilogue=false;
+  $("#title").classList.remove("hidden");
+  menuRender();
+  return true;
+}
+
 function key(e,down){
   const k=e.key.toLowerCase();
 
@@ -10476,7 +10556,10 @@ function key(e,down){
     if(down&&!e.repeat&&(e.code==="Space"||e.key==="Enter"))startGame(titleOptions[menu]);
     e.preventDefault();return;
   }
-  if(state.mode===MODE.OVER){if(down&&!e.repeat&&e.code==="Space"){state.mode=MODE.TITLE;$("#title").classList.remove("hidden")}return}
+  if(state.mode===MODE.OVER){
+    if(down&&!e.repeat&&(e.code==="Space"||e.key==="Enter"))returnFromGameOver(nowMs());
+    e.preventDefault();return;
+  }
   if(state.mode===MODE.BONUS){
     // STATIC BLOCK gets standard modern Tetris-style keyboard controls.
     if(ARCADE15.active==="STATIC"){
@@ -10612,6 +10695,10 @@ function screenZoneFromPointer(e){
 const mobileTouchUntil={left:0,action:0,right:0};
 function screenZoneOn(zone){
   if(state.mode===MODE.TITLE)return;
+  if(state.mode===MODE.OVER){
+    returnFromGameOver(nowMs());
+    return;
+  }
   screenZoneCounts[zone]++;
   mobileTouchUntil[zone]=nowMs()+110;
   if(screenZoneCounts[zone]>1)return;
@@ -10764,6 +10851,7 @@ function resetForTest(gameType="A"){
   state.tension=0;state.density=0;state.lastCollision=0;state.eventText="";state.eventUntil=0;state.eventStrength=0;state.causeText="";state.causeUntil=0;state.causeStrength=0;
   state.rescueCount=0;state.screenTransitions=0;state.lastTransitionAt=-1;state.minTransitionGap=999999;state.flipperContacts=0;state.slingsHit=0;state.bumperHits=0;state.targetHits=0;state.shotCounts=Object.create(null);state.ballStartedAt=0;state.ballDurations=[];state.playStartedAt=0;
   state.oscMode=0;state.filterEnv=0;state.fmEnergy=.05;state.subEnergy=.04;state.feedback=.08;
+  song.scoreAct=scoreActIndex(state.score);song.scoreActPending=song.scoreAct;
   leftDown=rightDown=false;
   resetBall(true);
 }
@@ -11088,7 +11176,7 @@ window.__PINBALL_TEST__={
   pressBonusJump:()=>{bonusJumpDown=true;bonusJumpPressed=true},
   releaseBonusJump:()=>{bonusJumpDown=false},
   upperTopShots,
-  scoreEmotion,scoreEmotionTier,snapSemiToChord,harmonyForTime,consonantChordTones,pcDist,portraitLayoutMetrics,
+  scoreEmotion,scoreEmotionTier,scoreActIndex,scoreActSpec,scoreActProgress,scoreRoleGain,snapSemiToChord,harmonyForTime,consonantChordTones,pcDist,
   currentChord,snapshotChord,setHarmonyIndex,harmonyIndexForWhen,harmonySnapshotForWhen,harmonyAudit,
   SCORE_HARMONY_THRESHOLDS,SCORE_HARMONY_NAMES,HARMONY_PROGRESSIONS,harmonyChapterForScore,progressionForChapter,commitHarmonyChapter,maybeAdvanceHarmonyChapter,
   triggerEmotionTier,registerUpperFxHit,playCoreMotif,playCoreLead,
@@ -11316,1795 +11404,163 @@ if(new URLSearchParams(location.search).has("v27smoke")){
    ============================================================ */
 </script>
 
-<!-- V17.4 MOBILE / UPPER HITBOX PASS
-VISUALS: removed scan curtains, rotating tunnel and edge-strobe spectacle layers. Reactive visuals still scale with song intensity but cap at restrained bars/waves/rings/constellation/climax rays.
-UPPER HIT DETECTION: bumper hit radius +9/+11 px, predictive attraction, swept shot-mouth crossing, wider CENTER/orbit mouths, single-owner collision response per physics substep.
-MOBILE: dynamic viewport, safe-area, portrait/landscape layouts, visible coarse-pointer controls, multi-touch pointer tracking, orientation/visualViewport resize handling.
+<!--
+PINBALL SYNTH v29 / SCORE ACT + ELECTRONICA MIX REFACTOR
+
+CORE MUSIC ARCHITECTURE
+- one master transport
+- SCORE ACT is the single macro-arrangement authority
+- score transitions commit only on 4-bar boundaries
+- minigame rewards remain permanently unlocked but are mixed/rotated by SCORE ACT
+- high-register SHOOTER / GOLDFISH / CRANE roles rotate instead of stacking
+- HOMERUN bass owns the bass register when active; generic dance bass is suppressed
+- bonus games foreground their own signature while the main bed is reduced
+
+SCORE ACTS
+0 AIR      : AMBIENT FIELD
+5,000 PULSE: KICK ENTER
+15,000 BODY: BASS ENTER
+35,000 DRIVE: OPEN HAT + ACID
+80,000 LIFT: LEAD + HOOK
+180,000 PEAK: FULL DANCE
+350,000 BREAK: GLITCH + BREAK FILLS
+
+SOUND / 2000s ELECTRONICA DIRECTION
+- 124 BPM normal / 126 BPM hard
+- four-on-floor + offbeat open hats from DRIVE
+- deterministic micro-grains / digital plucks
+- tighter rhythmic stereo delay
+- shorter darker reverb
+- mono-centered sub/bass ownership
+- low-mid cut around 315 Hz
+- controlled presence/air rather than broadband loudness
+- more headroom before soft clipping
+
+UI
+- minigame intro is text only; no modal title card
+- SCORE ACT is continuously visible
+- ACT transition is text only and states the newly entering musical role
+- MUSIC GET is text only
+
+REFACTOR / DELETED LEGACY
+- removed obsolete portrait controller-deck metrics helper
+- removed parallel spectacle-body and story-memory arrangement layers
+- removed unused stacked-chord, acid FX, groove FX, compatibility voice wrappers
+- save version is one constant (MINI_SAVE_VERSION)
 -->
-<!-- v18.3: HARD DROP + UNIVERSAL CLEAR CONDITIONS + CLEAN BALL VISUALS -->
+
+<!--
+OSS CONTROL / GAME-FEEL REFERENCES RETAINED FROM v27 (MIT projects):
+- Jake Gordon / javascript-tetris
+- Christopher Scott Hernandez / whackamole
+- Dave Kerr / spaceinvaders
+- pyforgedev / flappy-bird
+- Sithumsankajith / breakout-web-game
+No remote runtime dependency is required; the build remains one self-contained HTML file.
+-->
 </body>
 </html>
-<!-- V53 MASTER RULE:
-PRIMARY: make RELEASE on A. Three RELEASES clear a set and trigger MAXIMUM.
-B: return upward; five notes are an optional, explicitly-labeled flow bonus.
-No hidden prerequisite is presented as mandatory.
--->
-
-<!-- V54: Final objective hierarchy
-MASTER: CENTER ×3 = CLEAR / MAXIMUM.
-A: LOOP -> CENTER -> RELEASE.
-B: RETURN TO A; NOTES are explicitly BONUS only.
-UPPER forced return is telegraphed for its final 4 seconds.
--->
-
-<!--
-V55 PLAYER GRAMMAR
-1. SPACE = launch.
-2. If you are at the bottom: GO UP.
-3. If you are at the top: LOOP until CENTER lights.
-4. Hit CENTER three times: CLEAR.
-5. Five notes are optional: FREE LOOP + SAVE.
-
-Everything else is sound, score, or texture—not another rule to memorize.
--->
-
-<!--
-V57 SYNTH / COMPOSITION PRINCIPLE
-- No synth menu is required to "make music".
-- The pinball performance is the sequencer.
-- A small digital palette creates the warm/cold bed.
-- Rare data bursts are synchronized to actual musical/game events.
-- C / ARRANGER borrows the structural idea of the FC Pinball C-screen mini-game,
-  but uses original abstract graphics and a musical objective.
--->
-
-<!--
-V61 AUDIO AESTHETIC
-- ALL legacy sound-effect identities are removed.
-- Every physical collision is a quantized musical event from one instrument.
-- Pitch theory is snapped to a four-bar consonant/modal harmonic field.
-- Timing is quantized to 32nd notes for impacts and 16th notes for composition.
-- Core voice = sine + triangle + extremely soft octave harmonic.
-- Space = deep reverb + alternating stereo cross-feedback delay.
-- No noise burst, no square click, no launch/drop/flipper/bumper SE palette.
--->
-
-<!--
-V62 FINAL AUDIO RULE
-There is exactly ONE audible instrument family in the game.
-No game-object owns a separate sound-effect timbre.
-Every impact becomes a note in the current quantized harmonic field.
--->
-
-<!--
-V63 COLLISION INVARIANT
-One physical collision -> one musical contact event.
-No object adds a second cosmetic sound on top of its collision.
--->
-
-<!--
-V64 COMPOSITION REWARD LOOP
-
-PHYSICAL PLAY
-  -> writes rhythmic ink to a 16-step grid
-
-RHYTHM ARC
-  PULSE
-  -> BEAT
-  -> GROOVE
-  -> RHYTHM
-
-CENTER x3
-  -> SONG!
-  -> 3/4-beat negative-space drop
-  -> two-bar full-arrangement payoff
-  -> VARIATION n+1
-
-The composition never "finishes and dies".
-Every subsequent CLEAR keeps the identity of the piece but rotates the rhythm,
-changes response placement, alters arpeggio register and selects another phrase.
--->
-
-<!--
-V65 SONG CYCLE
-The player-facing cycle is:
-  PULSE -> BEAT -> GROOVE -> RHYTHM -> SONG!
-  SONG 1 -> NEXT: SONG 2 -> SONG 2 -> NEXT: SONG 3 ...
-
-Internally, later songs are variations of the same identity, not resets:
-rhythm accents rotate, response phase changes, arpeggio register shifts,
-and a new phrase is selected. The player never sees the word "variation".
--->
-
-<!--
-V66 MUSIC PRIORITIES
-
-1. GROOVE MUST EXIST BEFORE PLAYER-WRITTEN FILLS.
-   Low pulse + backbeat + restrained 8th lift = body.
-   Collision-derived accents become fills, not the foundation.
-
-2. MELANCHOLY COMES FROM HARMONIC GRAVITY.
-   Eight-bar cycle delays resolution back to Am9.
-   Long overlapping add9 / maj7 / sus voicings create ache without dissonant chaos.
-
-3. OKAZU RIFF ONLY USES EMPTY SPACE.
-   It appears every second bar and never competes with the main melody.
-
-4. BONUS HAS FOUR READABLE ACTIONS.
-   HIT 1-2-3-4 -> CATCH -> TRACE 3 -> EXIT.
-   Success adds both a phrase and more riff space to the ongoing song.
-
-5. MASTER LOUDNESS IS HIGHER BUT COMPRESSED.
--->
-
-<!--
-V67 BONUS REVISION
-Rejected: strict ordered 1-2-3-4 targets (0/100 first-phase completion in stress test).
-Adopted:
-  LIGHT ANY 4 -> CATCH -> TRACE 3 -> EXIT.
-Repeated top hits gently fan the return toward an unlit lane, avoiding a dead repeated loop.
--->
-
-<!--
-V68 CENTRAL IDEA
-The system now "cheats" in favor of musical beauty.
-
-The groove, bass movement, harmonic progression, hook candidates and melodic
-phrases are precomposed latent material. Gameplay does NOT have permission to
-destroy the song. It reveals layers, selects between prepared alternatives and
-writes tasteful fills.
-
-BALL MOTION IS SILENT.
-Only impacts speak. Motion modulates air/space/filter without generating pitch.
-
-BONUS:
-LIGHT 4 -> CATCH PHRASE -> PLAY 6 (keep the ball alive while carrying it) -> EXIT.
--->
-
-<!--
-V69 BONUS ASSIST
-Repeated successful top hits secretly light the next missing lamp.
-This is intentional game feel assistance, not a simulation claim.
-The player still has to return the ball, catch PHRASE, survive PLAY 6, and reach EXIT.
--->
-
-<!--
-V70 — "CRYING PINBALL" MUSIC MANIFESTO
-
-The design goal is not "generative music".
-It is an authored emotional song that lets the player believe they discovered it.
-
-16-BAR FORM
-  HEART  1–4  : pulse, memory, tiny question
-  BODY   5–8  : groove + bass + first complete phrase
-  BREAK  9–12 : remove hats/top voices/riff; make the melody feel absent
-  RETURN 13–16: melody returns wider; E7(b9) pulls painfully back to Am9
-
-PLAYER CONTROL
-  collisions = tasteful ornaments
-  loops       = reveal shimmer/riff
-  centers     = unlock lead/arrangement
-  bonus       = selects extra phrase/riff
-  clear       = negative space -> full return
-
-The player cannot compose an ugly chord progression or destroy the groove.
-They choose which beautiful prepared path is revealed.
--->
-
-<!--
-V71 INSTRUMENT TABLE
-
-LOWER PANEL CAUSALITY
-  C -> PAD
-  E -> BASS
-  G -> BEAT
-  B -> RIFF
-  D -> LEAD
-Instrument unlocks persist even when the five gameplay note lamps reset.
-
-UPPER SOUNDSCAPE
-  AIR   -> reverb / width
-  GLASS -> high shimmer
-  ECHO  -> stereo delay depth
-
-MELLOW ARC
-  panel count + soundscape hits + CENTER + SONG number + elapsed bars
-  progressively darken filter, increase reverb tail, widen pad spacing,
-  and deepen cross-feedback delay.
-
-BONUS RESEARCH PRINCIPLE
-  One control, changing role, split-second readable.
-  BREAK 4 -> CATCH -> ESCORT 3 -> EXIT.
-  Same A/D input; the task changes, not the control vocabulary.
--->
-
-<!--
-V72 REFERENCE SYNTHESIS — ORIGINAL COMPOSITION, NO MELODY COPYING
-
-REFERENCE ROLES
-- Luv(sic) pt2: beat weight / ~92 BPM hip-hop centre of gravity.
-- Iambic 9 Poetry: delicate fills, silence, counterpoint, floating harmonic detail.
-- Stickerbush Symphony: environmental memory / wide synth atmosphere.
-- ICO "Heal": fragility through subtraction.
-- rei harakami "Pone": quiet/classical ambient dignity.
-
-RULE:
-Only the BEAT is acid-coloured.
-Everything pitched/harmonic stays extremely mellow and cosmic.
-
-32-BAR FORM:
-ORBIT -> MEMORY -> VOID -> RETURN -> AFTERGLOW.
--->
-
-<!--
-V73 — 124 BAR DIRECTOR
-
-UPPER ROLE
-  LEFT LOOP  = DREAM  (bias toward PAD / LEAD / SPACE)
-  RIGHT LOOP = DRIVE  (bias toward BEAT / BASS / ACID)
-  CENTER     = COMMIT (advance to the next 124-bar chapter)
-  AIR / GLASS / ECHO remain persistent soundscape processors.
-
-124 BAR FORM
-  000–015 ORBIT
-  016–031 SIGNAL
-  032–047 MEMORY
-  048–063 GRAVITY
-  064–079 VOID
-  080–095 REENTRY
-  096–111 SUPERNOVA
-  112–123 AFTERGLOW
-  TOTAL = 124 bars
-
-SURPRISES ARE COMPOSITIONAL:
-  VOID removes expected material.
-  REENTRY returns with physical impact.
-  SUPERNOVA intensifies acid rhythm.
-  COMMIT can jump the music to the next chapter.
--->
-
-<!--
-V74 INNER COSMOS
-
-ORBIT MOTIF
-- Replaces the bright 6-note "STAR RIFF".
-- 3-note sparse fragments with long gaps and a delayed ghost return.
-- Appears rarely and disappears entirely in VOID.
-- Its emotional function is memory, not decoration.
-
-UPPER THREE CIRCLES
-- Real physical rebound bumpers (larger radii, stronger boost/restitution).
-- AIR: low breath / expanding horizontal wave.
-- GLASS: one harmonic opening / prism rays.
-- ECHO: repeated spatial memory / concentric afterimage rings.
-- Each hit activates sound + visual FX and persists as a soundscape processor.
-
-COMPOSITION
-- Fewer decorative events.
-- Motifs recur structurally across 124 bars.
-- VOID removes the motif so REENTRY feels like remembering something.
--->
-
-<!--
-V75 SCORE MEMORY / HARMONIC SAFETY / TIGHT UPPER CORES
-
-SCORE -> EMOTION
-- Score continuously drives emotional depth.
-- Higher score darkens the soundscape, deepens space, strengthens bass/kick,
-  lengthens lead expression and increases delayed vibrato.
-- Thresholds create restrained harmonic "emotion blooms".
-
-HARMONIC SAFETY
-- Every pitched voice is snapped to the chord active at its scheduled time.
-- Fixed C-major lead notes are removed from playback.
-- Panel previews and HARMONY READY also use current chord tones.
-- PAD note duration is capped below one bar so sustained notes do not bleed
-  across chord changes and create accidental dissonance.
-
-UPPER CIRCLE COLLISION
-- Visual radius != collision radius.
-- AIR/GLASS: visual 42, hit core 30.
-- ECHO: visual 47, hit core 33.
-- Only the visibly marked inner core triggers rebound + sound/visual FX.
--->
-
-<!--
-V76 ROOT-CAUSE FIX
-
-DISSONANCE
-The prior test only proved notes belonged to the declared chord.
-That was insufficient because some declared chords themselves contained harsh
-simultaneous tensions (F-B tritone, E-F b9), and pitched percussion was unrelated
-to harmony.
-
-Fix:
-- The harmonic skeleton is now triadic/consonant by design.
-- Every pitched melodic/harmonic voice snaps to that consonant core.
-- No add9/b9/#11/tritone color tone is allowed to appear accidentally.
-- Defensive sustained-voicing filter rejects minor-2nd/tritone pairs.
-- Rim is noise-based rather than a fixed 410/690 Hz pitched ring.
-- Acid beat/pressure is tuned to the current harmony root/fifth.
-
-UPPER CIRCLES
-- Collision radius exactly equals the visible physical circle radius.
-- Any visible edge contact by the ball causes rebound.
-- Decorative outer FX rings remain non-physical.
-
-STIMULATION
-- Score milestones 3/5/7 trigger unmistakable arrangement transformations,
-  while remaining harmonically safe.
--->
-
-<!--
-V76.1 COLLISION PRIORITY / MEMORY SHOCKS
-
-UPPER collision order changed:
-FX CIRCLES -> rails -> posts.
-The visible AIR/GLASS/ECHO body owns contact first from every direction.
-
-Score milestones are now strongly perceptible arrangement events:
-14k physical rhythm ignition
-28k low-octave opening
-48k vacuum/re-entry
-76k motif return
-112k three-part spatial wave
-160k peak consonant bloom
--->
-
-<!-- V76.2 MINIGAME CRASH FIX
-HARMONY retains five safe slots because BONUS/FX code addresses indices 0..4.
-The extra slots are consonant octave/fifth doublings, not tension notes.
-This preserves harmonic safety while preventing undefined -> NaN WebAudio parameters.
--->
-
-<!-- V77 HOTFIX VERIFIED: BONUS audio path tested with finite-parameter WebAudio mock, 100/100 success, 100/100 return. -->
-
-<!--
-V78 SINGULAR HARMONY ENGINE
-
-ROOT CAUSE:
-The previous versions had two harmonic clocks:
-1) updateComposer used formBar124()/formOffset.
-2) voice snapping used harmonicBar(whenMs) from wall-clock time since audio init.
-COMMIT could therefore move the composition to one chord while the "safety"
-resolver snapped notes to another chord. This is removed.
-
-ONE AUTHORITY:
-song.harmonyIndex is now the only harmonic source.
-All composer, collision, bonus, upper FX and delayed melodic voices resolve from
-a frozen harmony snapshot.
-
-16-BAR CORE SONG INSIDE 124-BAR FORM:
-1-4 THEME
-5-8 ANSWER
-9-12 ABSENCE
-13-16 RETURN
-The 124-bar macro form transforms this same identity; it no longer invents a
-different melody for each named chapter.
-
-EMOTION:
-Score thresholds create unmistakable scene changes.
-They alter arrangement/dynamics/space and return the same remembered motif.
-
-UPPER:
-AIR + GLASS + ECHO in one visit/sequence -> WORMHOLE.
-WORMHOLE briefly deconstructs the mix and returns the core motif.
-
-DISSONANCE POLICY:
-- sustained voices: chord tones only
-- no wall-clock resnapping
-- no 2.003 octave beating
-- harmonic detune <= about 1 cent
-- chord switch ducks old delay feedback
-- no chromatic passing tone is used in v78; the "sigh" gesture moves only between chord tones
--->
-
-<!--
-V78.1 FUTURE HARMONY RESOLUTION
-Long phrases may schedule notes several seconds ahead.
-Each future note now resolves against the chord that will be active at its
-playback time, derived from the composer's core-bar + step anchor.
-This removes "correct when scheduled, wrong when heard" harmony errors.
--->
-
-<!--
-V79 AUDIBLE RESET
-
-The previous architecture changed internals but not the foreground enough.
-This version is explicitly designed around perceptual contrast.
-
-RULE 1: THE GAME STARTS WITH A COMPLETE MINIMAL SONG.
-Panels do not create music from silence; they awaken/upscale existing parts.
-
-RULE 2: EVERY PANEL IS IMMEDIATELY AUDITIONABLE.
-Unlocking a panel gives a 1–2 bar unmistakable demonstration.
-
-RULE 3: SCORE = ARRANGEMENT EVENT.
-2500 LOCK
-8000 BODY
-18000 DROP
-35000 VOID
-60000 RETURN
-95000 WIDE
-140000 TRANSCEND
-
-RULE 4: A 16-BAR IDENTITY IS HEARD REPEATEDLY.
-THEME -> ANSWER -> ABSENCE -> RETURN.
-
-RULE 5: RHYTHM IS FOREGROUND.
-Kick has sub/body/click layers. ACID G panel turns a complete groove into a
-physically obvious acid/full version rather than merely adding a quiet ornament.
--->
-
-<!--
-MEMORY v1 — COMPLETE MUSICAL TABLE FLIP
-
-THESIS:
-The player does not compose a song.
-The player gradually recognizes a melody that seems to have emerged from play.
-
-LOWER:
-C ROOT
-E PULSE
-G BODY
-B COLOR
-D VOICE
-These do not add unrelated instruments. They humanize one memory.
-
-UPPER:
-REMEMBER / FORGET / RETURN
-All are rebound bumpers.
-REMEMBER clarifies the motif.
-FORGET removes it and opens negative space.
-RETURN restores the same identity at a higher emotional intensity.
-All 3 = RECALL.
-
-CORE 16-BAR FORM:
-ENCOUNTER -> RECOGNITION -> LOSS -> RETURN
-
-GAME OVER:
-Gameplay ends first.
-Beat never returns.
-After silence, the memory motif returns alone, then bass, pad, and finally voice.
-The player listens to the song that survived the game.
-
-REFERENCE PRINCIPLES:
-- bodily beat, contemplative landscape
-- sparse piano-like memory voice
-- absence is an active musical event
-- recurrence is more important than novelty
--->
-
-<!--
-REQUIEM v1
-This is not an incremental revision of MEMORY v1.
-
-AUDIBLE DIFFERENCES:
-- 86 BPM instead of 92.
-- B-minor-centered eight-chord progression.
-- entirely new kick and snare.
-- new recurring 5-note theme with a distinct rhythm.
-- 16-bar form: NEAR / OPEN / EMPTY / RETURN.
-- much less ambient wash; more dry physical foreground.
-- upper circles are HEAR / LOSE / RECALL.
-- score milestones reshape the arrangement rather than adding generic FX.
-- game-over coda is sparse and beatless.
--->
-
-<!--
-MOTORIK TRANCE v1
-
-GOAL:
-Earworm first. Trance second. Emotion after entrainment.
-
-AUDIBLE RULES:
-- 122 BPM four-on-the-floor is invariant.
-- kick every quarter note.
-- clap/snare on beats 2 and 4.
-- offbeat hats.
-- root/octave machine bass.
-- a four-note hook repeats every two bars and becomes more persistent.
-- score opens DRIVE -> FLOW -> TRANCE -> BLOOM -> HYPNOSIS.
-- upper circles: LOOP / SHIFT / BLOOM.
-- harmonic language stays simple and friendly; complexity comes from repetition,
-  stereo delay and filter motion rather than chord density.
-
-REFERENCE TRAITS:
-- machine repetition / minimalism
-- soft digital stereo delay and elastic synth timbre
-- friendly, instantly legible game-BGM hook
-No melody or recording is copied from a specific reference.
--->
-
-<!--
-MOTORIK TRANCE v2 — PANEL RULE SYSTEM
-
-PANELS ARE NOT INSTRUMENT UNLOCKS.
-They permanently change the musical grammar of the current run.
-
-C ROOT
-- four-on-floor becomes heavier and absolutely dominant
-
-E THIRD
-- earworm hook becomes 16th-note chopped/staccato
-
-G FIFTH
-- root/octave machine becomes a bouncing two/three-degree bass phrase
-
-B COLOR
-- 1-beat micro-fragments appear at phrase boundaries
-
-D AIR
-- pad inversion, hook shift and arp lift the register
-
-ALL FIVE = LIVE MIX
-- all rule changes combine
-- extra acid punctuation
-- LOOP/BLOOM forced on
-- upper LOOP/SHIFT/BLOOM gain stronger combined behavior
-
-INFLUENCE ROLES
-- computer-music-club-like bright digital pop immediacy / playful edits
-- group_inou-like cut-up rhythmic displacement / abrupt repetition
-No direct melody, recording, or identifiable musical passage is copied.
--->
-
-<!--
-MOTORIK TRANCE v3 — BRIGHT DIGITAL POP
-
-PRIMARY CHANGE:
-The beat is now unambiguously four-on-the-floor:
-- kick on every quarter note, louder and more defined than snare/hat
-- compact mid-body for laptop speakers
-- offbeat hats are lighter
-- ghost hats arrive later
-
-MUSICAL LANGUAGE:
-- bright, friendly digital timbre
-- playful PCM/FM-like short lead
-- colorful but legible major7/6/add9 voicings
-- bouncing synthetic bass
-- short toy/game-like five-note hook
-- faster rhythmic stereo delay
-- less ambient wash, more dry foreground
-
-PANEL RULES:
-C ROOT
-E THIRD
-G FIFTH
-B COLOR
-D AIR
-ALL = LIVE MIX
-
-The intention is not to imitate a specific artist or track, but to use:
-bright digital pop immediacy, playful micro-editing, nostalgic game-computer texture,
-and strong club-like four-on-the-floor propulsion.
--->
-
-<!--
-MOTORIK TRANCE v4 — HARD CLOCK
-
-ROOT CAUSE OF "NOT FOUR-ON-THE-FLOOR":
-v3 placed kicks on step 0/4/8/12, but the step scheduler itself was frame-driven:
-  nextAt = now + sixteenth
-If a frame arrived late, the engine advanced only one step and effectively lost
-musical grid events. quantizedTime() then rounded events forward, making the
-quarter-note pulse perceptually uneven.
-
-v4 FIX:
-- audio transport has its own absolute 16th-note timeline
-- 120ms look-ahead scheduling
-- while-loop recovery schedules EVERY missed step; no grid steps are skipped
-- kick occurs unconditionally on 0 / 4 / 8 / 12
-- bass moved to offbeats 2 / 6 / 10 / 14
-- hook begins off the downbeat
-- acid/stutter stay between kicks
-- fixed kick tuning, independent of harmony
-
-THE TEST FOR FOUR-ON-THE-FLOOR IS NOW TEMPORAL:
-consecutive quarter-kick scheduled times must be exactly 60000/BPM apart.
--->
-
-<!--
-HARMONIC BUILD v1
-
-RETURN TO THE EARLY SYSTEM.
-
-The melody-first direction was abandoned.
-The music is now intentionally built from:
-1. exact four-on-the-floor
-2. offbeat root bass
-3. stacked chord voices
-
-PANELS:
-C ROOT   -> 1 voice
-E THIRD  -> 2 voices
-G FIFTH  -> 3 voices
-B COLOR  -> 4 voices
-D AIR    -> 5 voices
-
-Panel changes are heard at the NEXT BAR only.
-No immediate melody burst.
-No arpeggio.
-No stutter.
-No acid punctuation.
-No random foreground phrase.
-
-UPPER:
-LOW / WIDE / HIGH
-changes register/spread of the same stacked harmony.
-All three = BLOOM.
-
-The intended emotional mechanism is accumulation:
-bare pulse -> harmony gains body -> color -> air -> full five-voice bloom.
--->
-
-<!--
-AMBIENT GUIDED v1
-
-REFERENCE PRINCIPLES EXTRACTED FROM THE PROVIDED touch:waves SOURCE:
-1) A stable background track/context exists before the user acts.
-2) User triggers are quantized (touch:waves uses quantize(0.5) for 1/8 notes).
-3) Button identity is remapped by context (sound_tbl / background track).
-4) Group/exclusive/forcemono logic prevents incompatible overlap.
-5) Randomness is constrained to curated tables rather than arbitrary pitch generation.
-6) Gesture recording happens on a grid, so free input becomes coherent loops.
-7) Touch can control global filter/retrigger behavior without escaping the grid.
-
-THIS ENGINE TRANSLATES THOSE IDEAS TO PINBALL:
-- background = ambient-electro bed + four-on-floor breathing pulse
-- collision = high-level intent, NOT a note
-- intents = TIDE / GLASS / PULSE / CHOIR / AIR
-- all intents quantize to the next 1/8
-- only one foreground intent may win per 1/8 (density governor)
-- repeated same-role hits are collapsed by group cooldown
-- every audible cell is selected from a hand-curated consonant table
-- current world DIVE / DRIFT / ASCEND remaps register, width and brightness
-- world changes happen only at bar boundaries
-- score changes pleasure ceiling / filter / space, never spawns random rhythm
-- quarter-note kick ducks only the tonal dry bus, producing physical breathing
-
-PLAYER EXPERIENCE:
-"I can hit anything and it sounds good" is an illusion created by aggressive hidden curation.
-The player chooses energy and intention; the system secretly chooses timing,
-voicing, register, density and compatible variation.
--->
-
-<!--
-v17.1 LEGACY ENDING REMOVED / CONSTELLATION
-- Upper collision reliability: visible hit radius = physics radius, swept-circle anti-tunneling, gentle aim assist.
-- Upper is now the long-form WORLD ENGINE.
-- DIVE / DRIFT / ASCEND each select a curated soundscape at the next bar.
-- Completing all three = BLOOM (8+ bars).
-- Every 3 BLOOM = CONSTELLATION.
-- Every 3 CONSTELLATION = ASCENSION (16-bar macro state).
-- All upper preview events still pass through the guided anti-clutter governor.
-- Scale grows through duration, register, width and space rather than extra rhythmic chaos.
--->
-
-<!--
-v17.1 LEGACY ENDING REMOVED
-
-The supplied touch:waves source was treated as an architectural reference,
-not copied as a visual/audio asset.
-
-DEEP PRINCIPLES PORTED:
-
-1. BACKGROUND CONTEXT IS A MUSICAL LOOKUP TABLE
-   touch:waves: curBackTr + sound_tbl + convLiveSmple()
-   this build: guidedWorld + twBackdrop + TW_ROLE_MAP + TW_VARIANT_POOLS
-
-2. CURATED RANDOMNESS
-   touch:waves: efx_randtbl
-   this build: weighted, pre-vetted variant pools only
-
-3. GROUP EXCLUSIVITY
-   touch:waves: bass / piano / epiano / exclusive / forcemono
-   this build: role groups, role cooldown, one live foreground winner per slot
-
-4. MUSICAL SNAP WITH HUMAN FEEL
-   touch:waves quantize() allows near-grid input to feel immediate
-   this build: first 15% of an eighth belongs to that grid if not already scheduled
-
-5. PERFORMANCE BECOMES A LOOP
-   touch:waves: setSeqTrk() -> seqTrk[] -> sequence()
-   this build: twShadowWrite[16] -> twShadowPlay[16]
-   the previous performance is replayed through the CURRENT musical context,
-   so the loop feels like the player's phrase but never becomes a rigid sample repeat.
-
-6. CONTINUOUS GESTURE MODULATION
-   touch:waves: touchmove -> filter / Q / retrigger resolution
-   this build: ball speed / height / width / upper-presence -> filter, brightness,
-   stereo width, backdrop selection. It never grants arbitrary pitch.
-
-7. HIDDEN PLEASURE RESERVOIR
-   well-spaced successful play charges RESONANCE.
-   It releases only at an 8-bar boundary as spectral/harmonic expansion,
-   never as extra rhythmic clutter.
-
-THE PLAYER APPEARS FREE.
-THE SYSTEM IS HEAVILY CURATING THE RESULT.
--->
-
-<!--
-v17.1 LEGACY ENDING REMOVED / RESONANCE
-
-NEW PRIORITY:
-"IF YOU HIT IT, IT SHOULD ANSWER."
-
-The v1 governor was safe but too withholding.
-It could reject so many foreground gestures that the pinball felt disconnected
-from the music. v2 splits feedback into two layers:
 
-A) IMMEDIATE MICRO-RESONANCE
-   Every accepted physical contact can produce a tiny consonant answer immediately.
-   It is not a free note and does not enter the rhythmic foreground.
-   It is tightly rate-limited and always mapped to the active harmony.
-
-B) GUIDED COMPOSITION
-   The existing quantized / exclusive / curated intent engine still controls
-   the larger musical events.
-
-This means:
-physical pleasure is immediate,
-musical structure remains protected.
-
-LONG-FORM MASTERY:
-- HIT CHAIN: tactile short-term skill
-- RESONANCE XP / RANK: run-wide progression
-- DIVE / DRIFT / ASCEND WORLD MASTERY: route-specific expertise
-- SHADOW ARCHIVE DEPTH: rewards building useful loop memories
-- BLOOM / CONSTELLATION / ASCENSION: macro progression
-- RESONANCE reservoir: delayed spectral reward
-
-Mastery does NOT unlock more random notes.
-It unlocks deeper tails, more space, stronger macro resonance,
-and richer reinterpretation of the same safe material.
--->
-
-<!--
-v17.1 LEGACY ENDING REMOVED / BREAKOUT GROOVE
-
-MINI-GAME RESET:
-C RESCUE has been replaced by BREAKOUT.
-
-24 BLOCKS / 6 ARRANGEMENT STAGES
-04 CLOSED HAT
-08 CLAP
-12 SHAKER
-16 OPEN HAT
-20 PERC
-24 FULL GROOVE
-
-ABSOLUTE RHYTHM SAFETY:
-- block collisions NEVER schedule drum notes
-- mini-game only raises drumBuildPending
-- drumBuildActive changes ONLY at bar step 0
-- all drum parts are generated by scheduleBreakoutDrums()
-- every drum onset belongs to one fixed 16th-note master grid
-- open hat REPLACES closed hat on the same offbeats rather than stacking
-- no random drum timing
-- no collision-derived drum timing
-- no frame-derived drum timing
-- no free-running drum timers
-
-The player controls ARRANGEMENT DENSITY.
-The engine controls RHYTHM.
--->
-\n<!--\nv17.1 LEGACY ENDING REMOVED / UPPER REACTOR\nDRUM ROOT CAUSE: CLOSED HAT was high-pass 5.4kHz -> global ambient low-pass; other parts were orders of magnitude too quiet. Timing audit had not measured audibility.\nFIX: dedicated drum bus/compression, stronger transient envelopes, per-part counters, bar-boundary LIVE feedback.\nUPPER 15 METHODS: immediate signature; energy meter; chain; contribution text; resonance charge; surge jackpot; drum mix modifier; longer tails; DIVE sub stem; DRIFT stereo echo stem; ASCEND air stem; register/spatial identity; filter transform; reverb/delay mastery transform; BLOOM full-field surge.\n-->\n
-<!--
-v17.1 LEGACY ENDING REMOVED / DEEP MELLOW
-
-LOW-END REDESIGN
-- SUB BUS: pure sine low-end -> dedicated compressor -> master
-- BODY BUS: triangle/sine body -> gentle saturation -> master
-- KICK: long 48 Hz tail + warm 68 Hz body
-- BASS: mellow body bass + restrained 49 Hz sub support
-- AMBIENT BED: low pad every other bar
-- DIVE: explicit 42 Hz sub + low body
-- DRIFT: retains the body while widening
-- ASCEND: opens the top but leaves a low floor
-- BLOOM / ASCENSION: adds a sub-octave breath, not extra rhythm
-
-No new rhythmic event source was added.
-The hard-grid groove remains intact.
--->
-
-<!--
-STARTUP FIX v5.1
-Root cause: v5 connected subBus/bodyBus in initAudio() before creating them.
-Fixed by explicitly declaring and constructing subBus, bodyBus, subComp, and bodySat
-before the routing graph is connected.
--->
-
-<!--
-v17.1 LEGACY ENDING REMOVED / DEEP AIR
-
-PROBLEM:
-v5.1 made the low/body mix thicker by darkening the moving ambient low-pass.
-This also removed too much perceived air from GLASS / AIR / ASCEND.
-
-FIX:
-- added an independent AIR BUS
-- high-pass at 4.2 kHz
-- high-shelf centered around 7.2 kHz
-- gentle dedicated compressor
-- AIR BUS bypasses the mellow body low-pass
-- main ambient low-pass ceiling restored to ~7.2 kHz
-- sparse shimmer/noise only, not constant broadband hiss
-- ASCEND explicitly opens the air band
-- DRIFT gains glass sparkle
-- hats receive a small parallel air component
-
-MIX PHILOSOPHY:
-SUB = physical
-BODY = mellow
-AIR = open
-
-No low-end reduction was required.
-No rhythmic timing source was changed.
--->
-
-<!--
-v17.1 LEGACY ENDING REMOVED / DANCE DRIVE
-
-DANCE-MUSIC TUNING
-
-CORE CHANGES
-- BPM A: 122
-- BPM B: 124
-- immutable four-on-floor kick remains on 0 / 4 / 8 / 12
-- body bass now answers on ALL four offbeat eighths: 2 / 6 / 10 / 14
-- deep 49 Hz sub remains only on 2 / 10 to avoid low-end mud
-- stronger, faster sidechain envelope
-- closed hats use fixed velocity alternation, not timing swing
-- clap stays strictly on beats 2 / 4
-- shaker uses a fixed 16th velocity grammar
-- open hats replace closed hats instead of stacking
-- percussion remains fixed at 3 / 11
-- full-groove pickup remains grid-locked
-
-PHILOSOPHY
-The beat gets more danceable through:
-1. interlocking kick/bass,
-2. velocity accents,
-3. pumping,
-4. clearer backbeat,
-5. frequency separation.
-
-NOT through:
-- random timing,
-- collision-triggered drums,
-- free-running sequencers,
-- variable swing,
-- arbitrary fills.
-
-PLAYER BUILDS THE ARRANGEMENT.
-MASTER CLOCK OWNS THE GROOVE.
--->
-
-<!-- V7 BONUS CHAPTERS
-OPEN HAT: 2 / 6 / 10 / 14 = all offbeat eighths.
-After OPEN unlock, CLOSED moves to quiet 1 / 5 / 9 / 13 ghosts.
-
-CHAPTER 1 BREAKOUT:
-24 blocks build drums.
-FULL GROOVE reveals PHRASE CORE.
-
-CHAPTER 1.5 PHRASE CORE:
-moving target, 3+ hits depending on bonus level.
-collect -> exactly 2-bar hand-curated feature phrase.
-
-CHAPTER 2 ACID DRIVE:
-A/D steering, obstacle avoidance, 3 shields, near misses, 4 checkpoints.
-road speed increases through progress.
-obstacles are queued by the master grid.
-car position maps to curated chord degree.
-car motion maps to filter/resonance.
-acid timing NEVER follows steering or collisions.
-clear -> 8-bar ACID DRIVE reward in the main pinball.
-perfect clear -> full resonance.
-future clears increase BONUS LEVEL.
--->
-<!--
-V8 / SAVED BONUS
-
-FIX 1 — RACE WAS TOO FRAGILE:
-The old transition depended only on the two-bar phrase transport callback.
-Now:
-- scheduler still starts race musically at phrase end
-- PLUS updateBonus has a hard real-time fallback
-- saved RACE checkpoint starts ACID DRIVE immediately on next bonus entry
-
-FIX 2 — BREAKOUT REWARD FEEL:
-24/24 no longer leads to another abstract target.
-It creates a large falling PHRASE CHIP:
-- large glowing object
-- falling light trail
-- paddle magnet assist
-- catch interaction
-- miss simply respawns, no punishment
-- catch triggers SUB + CHORD BLOOM + AIR SHIMMER + ITEM GET
-- then exactly two bars of feature phrase
-- then race
-
-FIX 3 — MINI-GAME SAVE:
-localStorage key: pinballSynthMiniGameV8
-
-Saved:
-- exact 24-bit broken block mask
-- current chapter checkpoint
-- drum build
-- breakout clear
-- phrase/race unlock
-- bonus level
-- best race distance
-- perfect clears
-- chapter clears
-
-CHECKPOINT RULES:
-partial BREAKOUT failure -> resume exact blocks
-BREAKOUT clear -> resume ITEM DROP
-PHRASE CHIP caught -> resume RACE
-RACE failure -> resume RACE
-RACE clear -> next difficulty cycle starts BREAKOUT again
-earned drum build remains unlocked
--->
-
-<!--
-V9 / ACID ARP FIX
-
-ROOT CAUSE:
-The v8 race arpeggiator existed in code, but its realization was effectively inaudible:
-- register too low -> masked by kick/body bass
-- gain too small -> no foreground identity
-- no dedicated bus -> no way to hold it in front of the mix
-
-FIX:
-- dedicated ACID BUS -> PEAK TONE -> COMPRESSOR -> MASTER
-- saw + restrained square sub
-- acid notes moved to octave 2/3 instead of bass register
-- envelope gain increased substantially
-- stronger resonant low-pass envelope
-- slide/glide on fixed grid positions
-- steering changes chord-degree map and cutoff
-- steering velocity changes resonance / slide
-- near miss temporarily raises cutoff / resonance
-- timing remains fixed at [0,2,3,6,8,10,11,14]
-- race start plays a two-note acid preview
-- race HUD shows live note / filter / step / note-count / slide-count
-
-RHYTHM SAFETY:
-No steering movement directly triggers a note.
-No collision triggers a note.
-All race arp notes remain master-transport scheduled.
--->
-
-<!--
-V10 / RACE GROOVE
-
-PROBLEM:
-The race was only "avoid obstacles while an arp happens".
-That is not enough to create the illusion that the car is performing the music.
-
-FIX:
-1. Race ALWAYS starts with its own four-on-floor groove.
-2. Race has OPEN HAT on all offbeats from the first bar.
-3. Race clap is active from the start.
-4. BREAKOUT drum scheduler is suppressed during RACE to prevent duplicate patterns.
-5. Steering updates a hidden musical INTENT immediately.
-6. The NEXT scheduled acid note reads that intent.
-7. Fast steering increases cutoff / resonance / slide.
-8. Steering direction biases degree register:
-   left = low/dark, center = flow, right = lift.
-9. UI explicitly shows STEER -> ACID causality.
-10. GROOVE GATES create desirable racing lines, not only hazards.
-11. Passing gates increases GROOVE COMBO.
-12. Four consecutive groove gates = PERFECT LINE / BOOST.
-13. ACID CELLS appear as pickups and create temporary boost.
-14. NEAR MISS also strengthens groove/boost.
-15. Crash resets groove combo and heat.
-16. All musical onsets remain hard-grid scheduled.
-
-ILLUSION:
-STEER NOW
--> hidden intent changes NOW
--> next 16th/eighth event uses new degree/filter/slide
--> user hears an almost immediate musical answer
-without allowing input timing to destroy the beat.
--->
-
-<!--
-V11 / CAR ARP
-
-REQUEST:
-"車の動きに追従して16分音符のアルペジオ
-→ 移動する
-→ 音程が変わる
-最初からドラムが鳴っているのを修正"
-
-IMPLEMENTATION:
-
-ACID ARP
-- EVERY 16th master step now produces an arp note during RACE.
-- Gate = all steps 0..15.
-- Car X is divided into 5 pitch zones.
-- Each zone owns a curated 16-step chord-degree contour.
-- Moving left/right changes the NEXT 16th pitch.
-- Fast steering increases FILTER / RESONANCE / SLIDE.
-- Steering NEVER directly schedules a note.
-- Timing is still owned 100% by master transport.
-- visual road now shows LOW / L-M / MID / H-M / HIGH pitch zones.
-
-DRUM FIX
-- Removed scheduleRaceBaseBeat().
-- Removed race-only KICK / OPEN HAT / CLAP injection.
-- Race no longer creates drums automatically.
-- Existing earned BREAKOUT drum arrangement is allowed to continue normally.
-- No extra race drum layer is added.
-
-RESULT:
-MOVE CAR
--> horizontal pitch zone changes immediately
--> NEXT 16TH NOTE reads that zone
--> user perceives the car as playing the arp
-while rhythm remains impossible to destabilize.
--->
-
-<!--
-V12 / PULSE KINGDOM
-
-ADAPTED DESIGN PRINCIPLES FROM SMBDIS.ASM:
-player state separation, acceleration/friction, speed-sensitive jump,
-air control, player-follow scrolling, block hit from below,
-power-up rise then move, moving/drop platforms, jumpsprings,
-enemy object loops, checkpoints and explicit goal.
-
-BONUS FLOW:
-BREAKOUT -> ITEM DROP -> 2-BAR PHRASE -> ACID DRIVE -> PULSE KINGDOM
-
-PULSE KINGDOM:
-A/D run, SPACE jump.
-4300px side-scrolling world.
-Ground islands / pits.
-Moving platforms.
-Dropping platforms.
-Musical ? blocks.
-STAR / PHRASE / NOTE items.
-3 springs.
-8 enemies.
-3 checkpoints.
-Goal tower.
-
-MUSIC:
-jump / block / item / spring / stomp / goal each have consonant musical feedback.
-Clear unlocks a 12-bar KINGDOM motif in the main pinball.
-
-SAVE:
-Kingdom checkpoint persists in localStorage.
-Race clear saves directly into KINGDOM.
-Kingdom clear completes the trilogy and begins the next difficulty cycle.
--->
-
-<!--
-V13 / DRIVE FINISH
-
-FREEZE HARDENING
-- race dt capped to 1/20 sec
-- bonus dt capped to 1/15 sec
-- pending spawn queue capped
-- obstacle array capped
-- gate array capped
-- pickup array capped
-- lane indices clamped
-- race spawn loop has guard counter
-- race -> kingdom transition sets race.started=false and RETURNS immediately
-
-CLEAR CONDITION
-- Goal is no longer an invisible number of bars.
-- RACE TARGET = 2000 meters.
-- Start overlay: GOAL / 2000 m / REACH THE FINISH.
-- Top-right HUD always shows meters remaining.
-- Progress bar always visible.
-- Checkpoints at 500 / 1000 / 1500 m.
-- Finish line visibly approaches during final 260 m.
-- 2000 m triggers clear and transition to PULSE KINGDOM.
-
-The master transport still owns acid arp timing.
-Car X still changes the next 16th-note pitch.
--->
-
-<!--
-V13.1 / C GATE FIX
-
-ROOT CAUSE:
-PULSE KINGDOM referenced `spacePressed`, but that variable never existed.
-BONUS keyboard handling also swallowed Space without recording a jump input.
-If the persistent save pointed to KINGDOM, entering the C gate immediately
-resumed KINGDOM and the next update threw ReferenceError, appearing as a crash.
-
-FIX:
-- added bonusJumpDown / bonusJumpPressed
-- SPACE works as an edge-triggered KINGDOM jump
-- touch primary button also becomes KINGDOM jump
-- input cleared on blur / bonus entry / kingdom start
-- removed all reference to undefined spacePressed
-- saved mini-game stage is sanitized
-- C gate entry is exception-safe
-- malformed save automatically falls back to BREAKOUT instead of killing game
-- KINGDOM update has a recovery guard and preserves its checkpoint
-
-SAVE PROGRESS IS NOT CLEARED during normal operation.
-Only a malformed C-entry state is reset to BREAKOUT as emergency recovery.
--->
-
-<!--
-V14 / NEW GAME + CHIP KINGDOM
-
-TITLE
-- CONTINUE = restores mini-game + drum progression.
-- NEW GAME A = wipes mini-game save and starts NORMAL with drumBuild 0.
-- NEW GAME B = wipes mini-game save and starts HARD with drumBuild 0.
-- Title shows current save stage and drum/block progress.
-
-NO-DRUM START
-- Four-on-floor kick is no longer unconditional.
-- Dance bass is no longer unconditional.
-- Kick + bass only exist after drumBuildActive >= 1.
-- NEW GAME therefore begins as ambient harmony with NO percussion.
-- CONTINUE may begin with drums only when the player previously earned them.
-
-PULSE KINGDOM COMPLETION
-- coyote time
-- jump input buffer
-- variable jump height: HOLD SPACE high / TAP short
-- stronger skid/reversal physics
-- moving platform carry
-- floating optional NOTE chips
-- enemies turn at ledges
-- visible checkpoint posts
-- checkpoint persistence remains
-- musical blocks/items/springs/stomps remain
-
-CHIPTUNE EVOLUTION
-LEVEL 0 sparse quarter pulse
-LEVEL 1 8th pulse counterline
-LEVEL 2 triangle bass
-LEVEL 3 16th sparkle
-LEVEL 4 noise percussion / full console intensity
-Level depends on world progress + collected/used musical objects.
-All pitches remain current-harmony chord tones.
-
-12 SOUND-DESIGN IMPROVEMENTS EXECUTED
-1. Rhythm is progression-gated instead of always-on.
-2. More master headroom.
-3. Oversampled soft-clip stage after master compressor.
-4. Dedicated CHIP BUS with HP/LP/compression.
-5. Chiptune layers evolve with gameplay progress.
-6. Reverb return HPF removes low-end mud.
-7. Reverb return LPF removes brittle top.
-8. Delay feedback is low-pass filtered on both sides.
-9. AIR high shelf reduced to preserve smoothness.
-10. ACID presence peak softened / widened.
-11. Drum compression attack slowed to preserve body without click harshness.
-12. Sub compression + body saturation relaxed for thicker, more natural low end.
-
-DESIGN:
-The game should begin spacious and incomplete.
-The player earns rhythm, then phrases, then acid, then an increasingly
-digital/chiptune world. Progress is not only visual: the mix topology changes.
--->
-
-<!--
-V14.1 / EASY DRIVE
-
-RACE DIFFICULTY TUNING
-- road widened from 420px to 480px
-- car collision footprint slightly reduced
-- shields increased 3 -> 4
-- steering max velocity 560 -> 610
-- steering response increased
-- crash invulnerability 0.9s -> 1.45s
-- base road speed 330 -> 285
-- end speed growth 210 -> 125
-- bonus-tier speed scaling reduced
-- obstacles smaller
-- normal obstacles move slightly slower than before
-- fast obstacles only 1.10x instead of 1.20x
-- first ~72% of race: only one hazard spawn per bar
-- final phase: at most two hazards per bar
-- fast hazard rarity reduced
-- repeated same-lane blockage suppressed
-- obstacle live-array cap reduced 18 -> 10
-- gate / pickup visual density reduced
-- near-miss reward window widened
-
-UNCHANGED
-- clear condition = 2000m
-- checkpoints = 500 / 1000 / 1500m
-- visible finish line
-- 16th-note car arpeggiator
-- car X still controls pitch zone
-- steering motion still controls filter / resonance / slide
--->
-
 <!--
-V15 / JUICE ENGINE
+V30 / DRUM LOCK + STORY LAP RESET + COMPOSED SCORE FORM + MOBILE GAME-OVER FIX
 
-Every meaningful action now has a reward hierarchy BEFORE score reading.
+DRUM RULE
+- NEW GAME has zero drum voices in the main song
+- BREAKOUT partial progress never raises drumBuildPending
+- 24/24 BREAKOUT clear unlocks the complete DRUM GROOVE
+- first drum entrance is quantized to the next bar
+- old partial drum saves are migrated back to locked
+- once BREAKOUT has been cleared once, its arrangement unlock persists across later minigame laps
 
-VISUAL:
-particles, square shards, expanding rings, radial rays, screen shake,
-luminance flash, floating pop text, pre-pickup glow, milestone explosions.
+MINIGAME LAP RESET
+- after DARUMA / stage 10 clear, gameplay progression resets immediately to BREAKOUT
+- all per-stage checkpoints and partial progress are cleared
+- musicMask / arrangement unlocks are preserved
+- existing ALL CLEAR saves migrate to a fresh round automatically
+- ROUND counter replaces the old ENCORE state
 
-AUDIO:
-BODY + CORE + AIR transient stacks.
-All pitched juice uses current harmony chord tones.
-No arbitrary chromatic SFX. Ball motion remains silent.
+SCORE COMPOSITION
+- seven score acts now share seven explicit chord-progression states
+- 5k: main-theme fragment
+- 15k: full main theme
+- 35k: reharmonized/syncopated theme variation
+- 80k: lifted second half + brighter progression
+- 180k: full-theme modulation into D/Bm/G/A
+- 350k: deconstructed dark first half -> bright reconstruction
+- high-register minigame roles duck while the main theme is in foreground
 
-PINBALL:
-flipper press -> actuation response
-sweet ball contact -> SNAP / SWEET
-bumper / sling -> visual-musical response
+MOBILE GAME OVER
+- any screen tap returns to title after a short accidental-touch guard
+- SPACE or ENTER uses the same centralized return function
+- title/menu refresh is performed on return
 
-BREAKOUT:
-every block -> shards + transient
-combo -> visible multiplier
-every 4th block -> major unlock explosion
-phrase chip -> maximum reward
-
-ACID DRIVE:
-gate / near miss -> micro confirmation
-acid cell -> item reward
-perfect line -> power reward
-crash -> strong negative impact without reward chord
-
-PULSE KINGDOM:
-jump -> micro
-block -> break
-note chip -> item
-star / phrase -> power
-spring -> octave reward
-stomp -> snap + combo
-checkpoint -> power
-goal -> maximum clear
--->
-
-<!--
-V16 / ARCADE 15
-
-REFERENCE POLICY
-- External codebases were reviewed for game-loop, collision, state, input,
-  maze-generation, grid/piece, orbit-physics, shooter, pipe-rotation,
-  memory-card and sequencer architecture.
-- The implementations in this file are original and written to fit this game's
-  existing Canvas/WebAudio architecture.
-- No external sprites, audio, music tracks, level maps or copyrighted game art
-  are embedded.
-- Where a reference repository contains specially restricted assets, only code
-  concepts were used.
-
-REFERENCE MAP
-01 STATIC BLOCK
-  jakesgordon/javascript-tetris — MIT
-02 MINIMAL SCRATCH
-  ChloeLiang/rhythm-game — MIT
-03 AMBIENT LABYRINTH
-  johnellmore/maze-generator — MIT
-04 ISOLATION TENNIS
-  jakesgordon/javascript-pong — MIT
-05 BREAKOUT
-  jdsthird/Breakout — MIT
-06 ACID DRIVE
-  jakesgordon/javascript-racer — MIT (code only; no music/sprites)
-07 PULSE KINGDOM
-  user-provided SMBDIS.ASM + ayseaktas/Javascript-Platformer — MIT for latter
-08 GRAVITY WELL
-  bobjen/orbit — Unlicense/public-domain lineage
-09 SIGNAL FISHING
-  KaimiEwl/fishing-game — MIT
-10 ORBIT SHOOTER
-  pi0/space-invaders — MIT
-11 ECHO CLIMBER
-  kubowania/Doodle-Jump — MIT
-12 WAVE SURFER
-  forinda/canvas-games — MIT
-13 CIRCUIT HACKER
-  remarkablegames/water-pipe — MIT
-14 MEMORY CHOIR
-  Selharem/Memoy-Card-Game — MIT
-
-REWARD DESIGN
-Every game uses the shared JUICE ENGINE:
-anticipation glow -> impact -> particles/ring/rays -> harmony-safe sound stack
--> score/musical-state reward -> carried change into main pinball.
--->
-
-<!--
-V17 / COMPLETE STORY EDITION
-
-FINAL STAGE ORDER
-1 BREAKOUT / BUILD
-2 ACID DRIVE / PERFORM
-3 PULSE KINGDOM / REMEMBER
-4 ORBIT SHOOTER / ATTACK
-5 STATIC BLOCK / STACK
-6 ECHO CLIMBER / ASCEND
-7 TEMPEST RING / SURGE
-8 LUNAR LANDER / TOUCH
-9 FEEDBACK JOUST / FLOAT
-10 PUZZLE ORBIT / RESOLVE
-
-ARCADE 15 SELECTION UI IS NO LONGER REACHABLE.
-C GATE ALWAYS STARTS THE NEXT STORY STAGE.
-AFTER ALL 10 STAGES, C GATE RUNS FIXED-ORDER ENCORE CHALLENGES.
-
-REMOVED LEGACY ENDING
-- visible from title from first boot
-- explicitly says 500,000 POINTS
-- lifetime score stored in miniSave.legacyPointsRemoved
-- unlocks at 500,000
-- exact approved Japanese letter included
-- all normal score awards contribute
-- stage clear reward tuned to 4,200 base so the letter usually remains post-clear endgame
-
-MINIGAME QUALITY
-BREAKOUT
-- wider base paddle
-- 6-hit FEVER enlarges and accelerates paddle
-- every 4 blocks = major arrangement reward
-- 24th block = direct FULL GROOVE climax
-
-ACID DRIVE
-- retains easy 2000m version
-- visible four-lane phrase target sequence L/C/R
-- correct GATE order builds ACID PHRASE
-- full phrase gives boost and major reward
-
-PULSE KINGDOM
-- coyote time
-- input buffer
-- variable jump height
-- moving-platform carry
-- musical blocks, items, springs, enemies
-- checkpointing and chiptune progression retained
-
-AMBIENT LABYRINTH
-- goal alone is no longer enough
-- RAIN / TRAIN / ROOM memory echoes must all be found
-- continuous spatial proximity ping
-- secret room only opens at ECHO 3/3
-
-STATIC BLOCK
-- target extended to 6 lines
-- ghost piece
-- harmony changes on line clears
-- final reward = HARMONY SHIFT
-
-MEMORY CHOIR
-- expanded 8 -> 12 cards
-- 4 -> 6 sound pairs
-- RAIN / TRAIN / TV / ROOM / KEY / STEP identities
-- memory combo / best-combo reward
-
-SOUND
-- shared JUICE ENGINE retained
-- each final stage has unique completion cadence
-- subtle STORY MEMORY layer accumulates after stage clears:
-  chip pulse / triangle low tone / tiny noise / faint two-voice memory
-- layer is deliberately quieter than gameplay: nostalgia should feel discovered
-- ball motion remains silent
-- master transport still owns rhythmic onset
-
-STORY
-Legacy narrative ending removed.
-The nostalgic sound palette is diegetic: fragments of the old home.
-Story is suggested through stage fragments, never explained through stage fragments.
--->
-
-
-<!--
-V17.4 / SPECTACLE + SIGNAL MAZE
-
-VISUAL SPECTACLE
-- excitement curve reacts earlier and harder
-- scan curtains from tier 3
-- rotating tunnel/spokes from tier 4
-- peak edge strobes at tier 5 / surge / ascension
-- existing sequencer bars, contour waves, orbit rings, stars and ray bloom retained
-- background density now clearly increases with musical intensity
-
-THICKER SOUND
-- more sub/body/drum/space bus weight with master headroom reduced slightly
-- new scheduleSpectacleBody(): harmony-safe low-mid root/fifth support at bar boundaries
-- high spectacle adds deep-sub, glass upper body and air shimmer
-- master low shelf / presence / high shelf continue to open with spectacle
-- no arbitrary chromatic notes and no new free-running rhythm
-
-SIGNAL LABYRINTH REBUILD
-- removed stop-turn-step grid gameplay
-- player auto-runs continuously
-- A/D queues a left/right turn for the next junction
-- SPACE fires a SONAR burst and temporary speed boost
-- perfect maze is punched with loops, so route choice matters
-- RAIN / TRAIN / ROOM are three strong audiovisual memory pickups
-- collecting all three opens HOME
-- continuous interpolation + trail + sonar rings replace tile popping
-- no instant fail; navigation remains flowing and forgiving
--->
-
-<!--
-V17.5 PORTRAIT MOBILE PASS
-- Portrait phones use full 100dvh shell.
-- Original 16:15 game world occupies the top pane at full device width.
-- A/D/SPACE use a dedicated lower control deck and no longer cover the flippers.
-- Canvas render sizing follows canvas.getBoundingClientRect(), not the full shell.
-- safe-area top/bottom supported.
-- orientation/visualViewport resize support retained.
-- portraitLayoutMetrics exported for automated viewport testing.
--->
-
-<!-- v17.8: exact upper bumper CCD, no ball trail/aura, safe maze traversal, calmer physics, thicker low-mid mix. -->
-
-<!--
-V17.7 REBOUND + SCORE HARMONY EVOLUTION
-- DIVE / DRIFT / ASCEND are explicit true pop bumpers.
-- Visible rim equals collision rim; continuous TOI prevents tunneling.
-- Every valid contact exits with a positive outward normal velocity.
-- Kick strength: DIVE 330 / DRIFT 330 / ASCEND 365, capped for stable physics.
-- Score harmony chapters commit only on 4-bar boundaries:
-  0 HOME
-  30,000 OPEN SKY
-  120,000 DISTANCE
-  280,000 NIGHT MEMORY
-  420,000 RETURN
-- Each chapter changes the actual chord progression, not merely filter/EQ.
-- Later chapters add sparse counterline / low voicing / air shimmer while master transport remains authoritative.
--->
-
-<!--
-V17.8 SOLID POP BUMPER FIX
-- Upper DIVE/DRIFT/ASCEND collision is permanent and never disabled by reward cooldown.
-- Reward cooldown now debounces only audio/score/juice.
-- A bumper-owned physics substep skips rails/posts/guides, preventing double-reflection.
-- Rebound kick increased to 420/420/455 with restitution .96/.96/.97.
-- Removed nonphysical outer aim halo, so visible rim equals collision rim.
--->
-
-<!--
-V17.9 FREE UPPER PHYSICS
-ROOT CAUSE FIXED:
-- v17.8 upper route branch returned before updateUpperGeometry.
-- ENTRY / ENTRY-GATE / ORBIT / CENTER constrained motion could therefore ghost through all 3 circles.
-- Route steps now maintain prevX/prevY, run swept collision, cancel route on impact, then resolve physical rebound.
-- Successful solve has a defensive outward-radial-velocity postcondition.
--->
-
-<!--
-V18.0 FREE UPPER PHYSICS
-- Removed all ORBIT / CENTER Bezier routes from upper gameplay.
-- Removed ENTRY / ENTRY-GATE scripted routes; A starts as a free ball at the top.
-- DIVE / DRIFT / ASCEND are always pure solid pop bumpers.
-- ASCEND can no longer freeze or collect CENTER.
-- ORBIT / CENTER sensors moved to the actual top-rail openings (y≈158), away from the bumpers.
-- Crossing a top gate physically reverses vertical motion and preserves horizontal momentum.
-- CENTER progression no longer stops or teleports the ball.
-- Added upper anti-stall watchdog for low-energy pockets.
--->
-
-<!-- v18.1: LABYRINTH = junction select/dash, no auto-run deadlock. UPPER = open shot corridors, 3 pop bumpers moved between lanes, center post removed, hidden guide collisions removed. -->
-
-<!--
-V18.5 / C GATE RESUME FIX
-- Failure return now snapshots the currently active story stage before leaving BONUS.
-- Re-entering C gate restores saved state instead of invoking an implicit clean start.
-- BREAKOUT restores exact destroyed-block mask.
-- ACID DRIVE restores exact distance/checkpoint progress.
-- PULSE KINGDOM restores saved checkpoint.
-- ORBIT SHOOTER restores wave + enemy alive/HP state.
-- STATIC BLOCK restores line count + board.
-- ECHO CLIMBER restores exact height/checkpoint.
-- Generic timeout path uses the same snapshot path.
--->
-
-<!--
-V19.0 / 100-CONCEPT CLASSIC-MECHANIC PASS
-DESIGN FILTER
-- 100 minigame archetypes rated on immediacy, mastery, 3-button fit, distinctness,
-  music causality, and historical durability.
-- Five finalists: Tempest, Lunar Lander, Joust, Puzzle Bobble, Snake.
-- Implemented top four because removing DREAM (-1) + adding four (+4) yields the
-  requested net increase of roughly three story minigames: 7 -> 10.
-- Snake remains reserve to avoid overstuffing the campaign.
-
-DREAM TERMINAL
-- Removed from story order.
-- Removed from init/update/draw/save/reward routes.
-- No abstract "choose a feeling" clear condition remains.
-
-NEW STORY GAMES
-7 TEMPEST RING  : A/D orbit, SPACE fire. Clear 3 tubes.
-8 LUNAR LANDER  : A/D tilt, hold SPACE thrust. Make 3 soft landings.
-9 FEEDBACK JOUST: A/D drift, SPACE flap. Win height-based collisions.
-10 PUZZLE ORBIT : A/D aim, SPACE shoot. Match 3 and trigger cascades.
-
-C-GATE RESUME
-- All four new stages write checkpoint state and resume after failure/timeout.
--->
-
-<!--
-V20 / JAPAN-FAMILIAR MINIGAME REBUILD
-
-WHY:
-The previous post-Kingdom games asked the player to understand abstract systems
-before they could enjoy them. This pass reverses the priority.
-
-RULE:
-- One Japanese imperative tells the whole game.
-- One visible goal.
-- A/D + SPACE only.
-- Difficulty comes from speed/combo, never from hidden rules.
-- Failure keeps progress and returns through the C gate.
-
-STORY AFTER KINGDOM:
-4 UFOシューティング : 敵をぜんぶ撃て！
-5 カラー落ちもの   : 同じ色を4つつなげろ！
-6 もぐらたたき     : 出たモグラを15匹叩け！
-7 ホームラン競争    : 5本ホームラン！
-8 金魚すくい        : 金魚を8匹すくえ！
-9 クレーンゲーム    : 景品を3つ取れ！
-10 だるま落とし          : 20回跳べ！
-
-The V19 abstract routes remain removed. V21 also replaces Air Hockey with Home Run Derby.
--->
-
-<!--
-V21 / MUSIC ROLE SYSTEM + GAME FIX
-
-BUG FIXES
-- Goldfish scoop was mathematically unreachable in V20 because fish occupied roughly y=260..500
-  while the poi collision point was fixed at y=650 with an 88px radius.
-- V21 animates the poi through the fish field and catches on visible overlap.
-- Air Hockey removed from story. Replaced with familiar batting-center style HOME RUN DERBY.
-- Shooter timeout checkpoint schema corrected to match the simplified shooter.
-
-MUSIC ROLE SYSTEM
-Every story minigame owns one permanent arrangement layer:
-1 BREAKOUT  -> DRUM GROOVE
-2 DRIVE     -> ACID ARP
-3 KINGDOM   -> 8-BIT COUNTER
-4 SHOOTER   -> LEAD MELODY
-5 DROP      -> CHORD PAD
-6 MOLE      -> PERCUSSION
-7 HOMERUN   -> BASSLINE
-8 GOLDFISH  -> SHIMMER
-9 CRANE     -> HOOK MELODY
-10 DARUMA   -> BREAK FILLS (打撃の成功がその場でフィルを組み立て、クリア後は曲の節目に永久追加)
-
-CLEAR FEEDBACK
-- role is permanently added to musicMask / save
-- first 8 bars are deliberately foregrounded
-- main game displays MUSIC GET / <ROLE> ADDED
-- intro tells the player exactly what musical layer the minigame unlocks
--->
-
-<!--
-V22 / だるま落とし FULL REBUILD
-
-OLD:
-- stand still
-- press SPACE near a rope-cross event
-- 20 repetitions
-This was effectively a one-button reaction test.
-
-NEW:
-- Japanese schoolyard "だるま落とし" structure
-- RUN IN -> JUMP -> EXIT -> approach from the opposite side
-- A/D controls meaningful movement; SPACE is only the jump
-- 12 completed loops, not 20 static jumps
-- rope speed increases every 4 loops
-- PERFECT / GOOD timing creates mastery without adding rules
-- 3 misses returns to C gate, keeping completed loops
-- old `jumps` checkpoint migrates into `laps`
-
-MUSIC:
-- each successful jump previews OPEN-HAT GROOVE inside the minigame
-- every completed loop adds a groove accent
-- every 4 loops raises GROOVE LEVEL and adds clap/noise punctuation
-- clear still permanently unlocks the final OPEN-HAT GROOVE in the main song
--->
-
-<!--
-V23 / FINAL MINIGAME REPLACED: DARUMA OTOSHI
-
-WHY ROPE WAS REMOVED
-- Even after the V22 figure-eight rebuild, the core reward was still "wait for rope, press jump".
-- It did not deserve to be the final minigame in a music-building campaign.
-
-DARUMA OTOSHI
-- familiar Japanese physical toy/game
-- one-line rule: knock out all six blocks without dropping the daruma
-- A / D chooses the striking side
-- hold SPACE to charge, release to strike
-- visible power sweet spot
-- remaining tower has spring/wobble physics
-- hit from the useful side to counter a leaning tower
-- weak strike: block stays
-- good/perfect strike: block flies out
-- overpowered/off-center strike: tower receives dangerous angular impulse
-- three falls -> return to C gate
-- removed blocks remain saved on retry
-
-MUSIC ROLE
-- final role changed from OPEN-HAT GROOVE to BREAK FILLS
-- each successful block immediately previews impact/clap/percussion layers
-- later hits add noise/transient complexity
-- after clear, main song gets permanent end-of-phrase drum fills
-- first 8 debut bars exaggerate the fills so the player unmistakably hears the new arrangement layer
+REFACTOR
+- removed obsolete ENCORE state
+- removed partial-drum part-name helper
+- one resetMiniGameCycleFields() owns all minigame-lap resets
+- one drumsUnlocked() owns drum availability
 -->
 
 <!--
-V24 / DARUMA SMASH RUSH
-
-V23 PROBLEMS REMOVED
-- no SPACE hold/release state machine
-- no charge power meter
-- no spring/wobble simulation
-- no negative-direction stability bar
-- no side-correction hidden math
-
-NEW CORE
-- the active bottom block visibly slides left/right
-- A / D selects the matching hammer side
-- SPACE strikes instantly
-- hit when protrusion >= 60%; PERFECT at >= 90%
-- successful block flies across the screen and the whole daruma drops one tier
-- three good hits establish SMASH RUSH presentation
-- difficulty comes only from slide speed increasing with each removed block
-- three misses return to C gate; cleared blocks are saved
+V31 / PROGRESSIVE BREAKOUT DRUMS RESTORED
 
-MUSIC
-- each success immediately plays sub + clap + percussion
-- PERFECT adds noise/transient accent
-- the permanent clear reward remains BREAK FILLS in the main track
+The V30 binary drum lock was intentionally reverted.
 
-RELIABILITY
-- update clamps dt to 0..50ms
-- flying objects are finite-checked before retention
-- no hold-state dependency
-- V23 DARUMA checkpoint is intentionally discarded on migration
-- daruma init/update/strike/draw are exposed in __PINBALL_TEST__ for runtime smoke tests
--->
-
-<!--
-V25 / LEGACY ENDING REMOVAL
+BREAKOUT milestones:
+- 0–3 blocks: AMBIENT / no drums
+- 4 blocks: KICK + CLOSED HAT
+- 8 blocks: CLAP
+- 12 blocks: SHAKER
+- 16 blocks: OPEN HAT
+- 20 blocks: PERCUSSION
+- 24 blocks: FULL GROOVE + permanent BREAKOUT music-role unlock
 
-Removed completely:
-- fourth title-menu narrative option
-- dedicated narrative overlay DOM and CSS
-- 500,000-point unlock counter
-- automatic blackout / frozen-input ending
-- overlay open/close handlers
-- obsolete save flags
-- title save-info progress for the removed ending
-- ending frame branch and test hooks
+Timing rule:
+- crossing a milestone only changes drumBuildPending
+- the newly earned part enters on the next bar boundary
+- gameplay collisions never create off-grid drum hits
 
-Old saves remain compatible. Obsolete fields are discarded on load.
-Scoring now continues normally beyond 500,000 points with no forced ending.
+Persistence:
+- partial BREAKOUT drum progress is saved and restored before the first full clear
+- after the first full clear, musicMask keeps FULL GROOVE permanently unlocked
+- all V30 mobile/game-over, score-harmony/theme-form, and minigame-cycle reset changes are retained
 -->
 
 <!--
-V26 / FULLSCREEN DIRECT TOUCH
-
-MOBILE / TABLET:
-- virtual controller DOM removed
-- controller CSS removed
-- shell + canvas occupy the entire viewport
-- 100dvh / 100svh + safe-area aware title
-- viewport-fit=cover
-- iOS / Android standalone-capable meta tags
-- first touch requests Fullscreen API where the browser permits it
-- iOS fallback uses the maximum fixed dynamic viewport
-
-DIRECT TOUCH:
-- left third of the screen = LEFT / A / left flipper
-- center third = ACTION / SPACE / launch
-- right third = RIGHT / D / right flipper
-- invisible interaction: no buttons, labels, controller deck, or overlay
-- multi-touch supported
-- sliding a finger between thirds transfers the held input
-- pointercancel / blur / pagehide / visibilitychange safely release all controls
-
-RENDER:
-- world remains 960×900 internally
-- it is scaled to the largest uncropped size and centered inside the physical viewport
-- no gameplay geometry is stretched
--->
+V31.1 / PROGRESSIVE DRUM REBUILD ON EVERY ROUND
 
-<!--
-V26.1 / CENTERED FULL-VIEWPORT RENDER FIX
-- render() no longer overwrites the responsive world offsets
-- entire physical canvas is cleared/flood-filled every frame
-- 960×900 world stays centered at the largest uncropped scale
-- ResizeObserver watches both shell and canvas
-- orientation change performs a fast and a delayed viewport recalculation
+- permanent BREAKOUT musicMask still keeps FULL GROOVE in the main pinball song
+- entering BREAKOUT temporarily deconstructs drums to that round's saved block progress
+- a fresh BREAKOUT round begins at AMBIENT / level 0 even after previous full clears
+- 4/8/12/16/20/24 blocks rebuild the drum arrangement again
+- leaving a completed BREAKOUT returns the permanent main-song FULL GROOVE
 -->
 
 <!--
-V27 / OSS ARCADE FEEL REBUILD
-
-This single-file build remains self-contained. No remote runtime dependencies.
-
-Open-source implementation references used for timing/control/game-feel study
-and then rewritten for this game's own state model, art, audio and save system:
-
-1) Jake Gordon — javascript-tetris — MIT
-   https://github.com/jakesgordon/javascript-tetris
-   Studied: requestAnimationFrame delta handling, queued actions,
-   speed progression, collision-valid move/rotate/drop structure.
-
-2) Christopher Scott Hernandez — whackamole — MIT
-   https://github.com/christopherscott/whackamole
-   Studied: explicit live/dead/main step states, reaction-time scoring,
-   immediate step-forward after a successful hit.
-
-3) Dave Kerr — spaceinvaders — MIT
-   https://github.com/dwmkerr/spaceinvaders
-   Studied: direct ship speed, fire-rate cap, formation direction reversal/drop,
-   enemy acceleration as the formation thins.
+V31.2 / HARD-SYNC BEAT FIX
 
-4) pyforgedev — flappy-bird — MIT
-   https://github.com/pyforgedev/flappy-bird
-   Studied: delta-time-scaled motion, immediate impulse input,
-   fair progressive difficulty and anti-miss input timing.
+ROOT CAUSES FIXED:
+1) v31.1 committed drumBuildPending AFTER scheduling beat-one kick.
+   A newly unlocked drum bar therefore missed its first kick.
+   Fix: pending -> active is committed before every sound on step 0.
 
-5) Sithumsankajith — breakout-web-game — MIT
-   https://github.com/Sithumsankajith/breakout-web-game
-   Studied: axis-aware collision response and immediate paddle movement.
+2) the transport previously replayed EVERY stale 16th after a main-thread hitch.
+   Because WebAudio cannot schedule into the past, those events collapsed onto
+   AC.currentTime and sounded like a massive flam / phase shift.
+   Fix: stale past steps are discarded and the cursor hard-resyncs to the future grid.
 
-V27 FEEL RULES:
-- no cosmetic easing between input and avatar motion unless it is the mechanic
-- actions buffer briefly instead of disappearing between fixed updates
-- repeated movement uses DAS/ARR where grid play needs it
-- success resolves quickly; long empty animations removed
-- difficulty increases through speed/spacing, not new rules
-- touch zones are the action itself where possible
-- every success produces immediate visual + musical + optional haptic response
--->
-
-<!--
-V28 / SMARTPHONE-NATIVE VISUAL + FIRST-RUN MENU
+3) 27 voice functions independently converted performance.now() to AC.currentTime.
+   Fix: one audioTimeForMs() mapping is shared by drums, bass, acid, chip, theme and FX.
+   Mapping uses AudioContext.getOutputTimestamp() where available.
 
-FIRST RUN
-- no save: title menu displays only "NEW GAME"
-- no CONTINUE
-- no NORMAL/HARD choice
-- no SAVE EMPTY copy
-- no backup/import tools
-- NEW GAME always starts normal Game A
-- once a real save exists, title becomes CONTINUE / NEW GAME
-- old Game B saves still continue in Game B
+4) open-hat air transient was delayed +18ms, making a perceptible secondary attack.
+   Fix: aligned to the exact hat onset and reduced.
 
-SMARTPHONE PORTRAIT
-- no more desktop canvas floating in unused black space
-- dedicated vertical machine composition
-- top module: MODE / SCORE / ARRANGEMENT
-- middle module: exact 960:900 playfield, edge-to-edge at 100vw × 93.75vw
-- bottom module: live waveform, current musical layer, 10-part song DNA and story progress
-- the entire viewport is visually designed
-- game geometry is never stretched
-- no visible controller
-- entire shell remains the direct three-zone touch surface
-- touch input receives only a transient glow, not permanent buttons
-
-SMARTPHONE LANDSCAPE
-- left/right information rails fill the areas outside the uncropped game world
--->
-
-<!--
-V28.1 FIRST-PAINT CLEANUP
-- CONTINUE and save utilities start hidden in HTML before JavaScript runs
-- first-time users never see a one-frame SAVE CHECKING flash
-- very short portrait screens preserve a usable lower visual module
-- ordinary modern phones still render the playfield at full 100vw width
+MASTER GRID:
+- one musicEpoch
+- one 16th transport cursor
+- one performance<->AudioContext clock mapping
+- one bar-boundary arrangement commit point
+- late events are skipped, never replayed
 -->
+\n<!--\nV31.3 / AUDIO-CONTEXT MASTER CLOCK\n\nROOT CAUSE FROM V31.2:\n- getOutputTimestamp() maps audio that is PRESENTED at the output device, not the render clock used for future scheduling.\n- On mobile / Bluetooth this can differ from AC.currentTime by large output latency.\n- The previous Math.max(AC.currentTime+.003, mapped) therefore collapsed multiple future grid notes onto almost the same time.\n\nFIX:\n- AudioContext.currentTime is now the sequencer's master clock.\n- transportNextAudioSec advances by exact 16th-note seconds.\n- performance.now is only derived from audio time for visuals/harmony metadata.\n- one perf/audio anchor is sampled per scheduler frame; no getOutputTimestamp scheduling path remains.\n- stale steps are skipped in AudioContext time, never replayed.\n\nGROOVE CLEANUP:\n- level-1 closed hats are fixed to eighth-note offbeats (2/6/10/14).\n- level-4 open hats replace closed hats instead of stacking a second hat phase.\n- MOLE percussion reinforces the same offbeat and no longer adds off-grid claps.\n- HOMERUN bass syncopation is moved onto the canonical eighth grid.\n- DARUMA fill no longer creates a competing clap pulse.\n-->\n\n<!--\nV31.3b / MOBILE TIMING LOAD REDUCTION\n- closed/open hats, clap, shaker, guided air, chip noise and air noise reuse one pre-generated noise buffer\n- no per-hit random AudioBuffer allocation in the core drum path\n- scheduler look-ahead increased from 120ms to 220ms\n- audioTimeForMs never re-anchors halfway through one composer scheduling pass\n-->\n
