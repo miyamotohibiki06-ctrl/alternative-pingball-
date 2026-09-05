@@ -2,7 +2,11 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#050608">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>PINBALL SYNTH — PORTRAIT MOBILE / UPPER PRECISION</title>
 <style>
 :root{
@@ -20,29 +24,6 @@ canvas{touch-action:none;-webkit-tap-highlight-color:transparent}
 canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
 #title{position:absolute;z-index:20;inset:0;background:#080a0d;display:grid;place-items:center;cursor:pointer}
 #title.hidden{display:none}
-#letter{
-  position:absolute;z-index:30;inset:0;background:#050607;
-  display:none;place-items:center;padding:7vh 8vw;
-  opacity:0;
-}
-#letter.open{display:grid;opacity:1}
-#letter.cinematic{
-  display:grid;
-  opacity:0;
-  transition:opacity 3.2s cubic-bezier(.22,.7,.18,1);
-}
-#letter.cinematic.show{opacity:1}
-#letterPaper{
-  transform:translateY(12px);
-  transition:transform 3.2s cubic-bezier(.22,.7,.18,1),opacity 3.2s ease;
-  opacity:.92;
-}
-#letter.cinematic #letterPaper{transform:translateY(20px);opacity:0}
-#letter.cinematic.show #letterPaper{transform:translateY(0);opacity:1}
-#letterPaper{width:min(760px,88%);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:clamp(12px,1.35vw,18px);line-height:2.05;letter-spacing:.06em;color:#ddd9cd}
-#letterPaper .letterTitle{font-size:.8em;color:#777c78;letter-spacing:.18em;margin-bottom:28px}
-#letterPaper .letterClose{margin-top:34px;color:#676c6a;font-size:.75em;letter-spacing:.15em}
-#letterPaper p{margin:0 0 1.1em}
 
 #titleInner{width:78%;display:grid;grid-template-columns:1.4fr .6fr;gap:42px;align-items:end}
 .logo{font-size:clamp(50px,8.5vw,116px);font-weight:900;line-height:.72;letter-spacing:-.08em}
@@ -52,89 +33,84 @@ canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
 .menu>div{border-top:1px solid #313639;color:#676c6a;padding:7px 0}
 .menu>div.on{color:#eeeade}.menu>div.on:before{content:"● ";color:var(--accent)}
 .prompt{margin-top:24px;font:7.5px/1.7 ui-monospace,monospace;letter-spacing:.12em;color:#555b5c}
-#touch{position:absolute;z-index:12;left:0;right:0;bottom:0;height:34%;display:none;pointer-events:none;padding-bottom:env(safe-area-inset-bottom)}
-#touch button{position:absolute;bottom:max(8px,env(safe-area-inset-bottom));height:82%;border:0;background:transparent;pointer-events:auto;touch-action:none;-webkit-tap-highlight-color:transparent;border-radius:24px}
-#touch button:after{position:absolute;bottom:14px;font:800 11px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.16em;color:rgba(238,241,232,.72);padding:10px 13px;border:1px solid rgba(238,241,232,.16);background:rgba(8,11,12,.42);backdrop-filter:blur(3px);border-radius:16px}
-#tl{left:0;width:35%}#tp{left:35%;width:30%}#tr{right:0;width:35%}
-#tl:after{content:"A  LEFT";left:14px}#tp:after{content:"SPACE";left:50%;transform:translateX(-50%)}#tr:after{content:"RIGHT  D";right:14px}
-@media(pointer:coarse){#touch{display:block}}
 
 /* ------------------------------------------------------------
-   PORTRAIT MOBILE MODE
-   The playfield keeps the original 16:15 game geometry at the top.
-   Controls get their own lower half instead of covering the flippers.
+   V26 FULLSCREEN DIRECT TOUCH
+   No virtual controller. The entire game surface is the controller:
+   LEFT THIRD / CENTER THIRD / RIGHT THIRD.
    ------------------------------------------------------------ */
-@media(orientation:portrait) and (pointer:coarse){
-  html,body{width:100vw;height:100dvh;min-height:100dvh;display:block;background:#050608}
-  body{padding:0;margin:0}
-  #shell{
-    position:fixed;inset:0;
-    width:100vw;height:100dvh;max-height:none;
-    aspect-ratio:auto;box-shadow:none;background:#050608;
-  }
-  canvas{
-    top:env(safe-area-inset-top);left:50%;right:auto;bottom:auto;
-    width:min(100vw,calc(52dvh * 1.0666667));
-    height:min(93.75vw,52dvh); /* 960:900 = 16:15 */
-    transform:translateX(-50%);
-    background:#080a0d;
-  }
-  #touch{
-    display:block;
-    top:calc(env(safe-area-inset-top) + min(93.75vw,52dvh) + 6px);
-    bottom:0;left:0;right:0;height:auto;
-    padding:14px 10px max(14px,env(safe-area-inset-bottom));
-    pointer-events:none;
-    background:linear-gradient(to bottom,rgba(5,6,8,.10),rgba(5,6,8,.94) 24%,#050608 100%);
-  }
-  #touch:before{
-    content:"PORTRAIT CONTROL";
-    position:absolute;top:12px;left:50%;transform:translateX(-50%);
-    font:700 9px/1 ui-monospace,SFMono-Regular,Menlo,monospace;
-    letter-spacing:.18em;color:rgba(238,241,232,.34);
-  }
-  #touch button{
-    bottom:max(18px,env(safe-area-inset-bottom));
-    height:calc(100% - 46px);
-    min-height:150px;
-    border:1px solid rgba(238,241,232,.10);
-    background:rgba(20,27,25,.24);
-    border-radius:22px;
-  }
-  #touch button:active{background:rgba(255,107,59,.13);border-color:rgba(255,107,59,.38)}
-  #tl{left:10px;width:calc(34% - 14px)}
-  #tp{left:34%;width:32%}
-  #tr{right:10px;width:calc(34% - 14px)}
-  #touch button:after{
-    top:50%;bottom:auto;transform:translateY(-50%);
-    font-size:12px;padding:13px 12px;
-    background:rgba(8,11,12,.70);border-color:rgba(238,241,232,.22);
-  }
-  #tl:after{left:50%;transform:translate(-50%,-50%)}
-  #tp:after{left:50%;transform:translate(-50%,-50%)}
-  #tr:after{right:auto;left:50%;transform:translate(-50%,-50%)}
+html,body{
+  width:100%;height:100%;min-height:100%;
+  margin:0;overflow:hidden;
+  background:#050608;
+}
+body{
+  position:fixed;inset:0;
+  display:block;
+  touch-action:none;
+  overscroll-behavior:none;
+}
+#shell{
+  position:fixed;
+  inset:0;
+  width:100vw;
+  height:100vh;
+  height:100dvh;
+  max-height:none;
+  aspect-ratio:auto;
+  margin:0;
+  box-shadow:none;
+  overflow:hidden;
+  background:#050608;
+}
+canvas{
+  position:absolute;
+  inset:0;
+  width:100%;
+  height:100%;
+  display:block;
+  touch-action:none;
+  -webkit-tap-highlight-color:transparent;
+  background:#050608;
+}
 
-  #title{padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+/* The title is full-viewport too. Safe areas only affect text, never the playfield. */
+#title{
+  padding:
+    max(14px,env(safe-area-inset-top))
+    max(14px,env(safe-area-inset-right))
+    max(14px,env(safe-area-inset-bottom))
+    max(14px,env(safe-area-inset-left));
+}
+#titleInner{max-width:1180px}
+
+@media (orientation:portrait){
   #titleInner{
-    width:88%;height:100%;grid-template-columns:1fr;grid-template-rows:auto 1fr;
-    gap:20px;align-items:center;align-content:center;
+    width:min(88%,760px);
+    height:100%;
+    grid-template-columns:1fr;
+    grid-template-rows:auto auto;
+    gap:clamp(18px,4vh,42px);
+    align-content:center;
+    align-items:center;
   }
-  .logo{font-size:clamp(48px,17vw,82px);line-height:.75}
+  .logo{font-size:clamp(48px,16vw,92px);line-height:.75}
   .kicker{margin-top:18px;font-size:8px}
   .menu{font-size:10px;line-height:1.75}
-  .menu>div{padding:9px 0}
-  .prompt{font-size:8px;line-height:1.75;margin-top:18px}
-  #letter{padding:max(5vh,env(safe-area-inset-top)) 6vw max(5vh,env(safe-area-inset-bottom));overflow:auto;align-items:start}
-  #letterPaper{width:94%;font-size:clamp(11px,3.35vw,15px);line-height:1.82;padding-bottom:36px}
+  .menu>div{padding:10px 0}
+  .prompt{font-size:8px;line-height:1.75;margin-top:16px}
 }
-
-@media(orientation:landscape) and (pointer:coarse){
-  #shell{height:min(96dvh,96vw/1.0666667);width:auto;max-width:98vw}
-  #touch{height:38%}
-  #touch button{height:78%}
+@media (orientation:landscape) and (max-height:620px){
+  #titleInner{width:88%;gap:28px}
+  .logo{font-size:clamp(44px,9vw,86px)}
+  .kicker{margin-top:14px}
+  .prompt{margin-top:12px}
 }
 @supports(height:100svh){
-  @media(orientation:portrait) and (pointer:coarse){#shell{height:100svh}}
+  #shell{height:100svh}
+}
+@supports(height:100dvh){
+  #shell{height:100dvh}
 }
 </style>
 </head>
@@ -156,7 +132,6 @@ canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
           <div id="mContinue" class="on">CONTINUE</div>
           <div id="mNewA">NEW GAME A / NORMAL</div>
           <div id="mNewB">NEW GAME B / HARD</div>
-          <div id="mLetter" class="disabled">父からの手紙 — 500,000 POINTS</div>
         </div>
         <div id="saveInfo" class="prompt">SAVE — CHECKING...</div>
         <div id="saveTools" class="prompt" style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
@@ -164,29 +139,10 @@ canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
           <button id="loadBackup" type="button" style="font:inherit;color:inherit;background:transparent;border:1px solid currentColor;padding:7px 10px;cursor:pointer">LOAD BACKUP</button>
           <input id="saveFileInput" type="file" accept="application/json,.json" hidden>
         </div>
-        <div class="prompt">↑/↓ or A/D — SELECT<br>SPACE / ENTER — START<br><br>A / D — FLIP<br>SPACE — LAUNCH</div>
+        <div class="prompt">TAP MENU — START<br>KEYBOARD: A / D + SPACE<br><br>TOUCH SCREEN<br>LEFT THIRD = LEFT　CENTER = ACTION　RIGHT THIRD = RIGHT</div>
       </div>
     </div>
   </div>
-  <div id="letter">
-    <div id="letterPaper">
-      <div class="letterTitle">父からの手紙</div>
-      <p>ここまで、おめでとう。<br>そんなに遊ぶとは思ってなかった。</p>
-      <p>このゲームに入っている音のいくつかは、前の家で録った音です。</p>
-      <p>雨、電車、テレビ、食器、お前が廊下を走る音。<br>消えるのが嫌だっただけです。</p>
-      <p>もし今、私がまだ帰っていなくても、</p>
-      <p>私のことを「行方不明の父親」だけで覚えないでください。</p>
-      <p>雨の日に傘を忘れたこととか、<br>電池を買いに行って電池を買い忘れたこととか、</p>
-      <p>くだらない方を覚えていてください。</p>
-      <p>それで十分です。</p>
-      <p>こんなに遊んだなら、今日はもうやめなさい。</p>
-      <p>外の音でも聞いてきてください。</p>
-      <p>そのうち、そういう音も懐かしくなるから。</p>
-      <p>お父さんより</p>
-      <div class="letterClose">SPACE / CLICK — CLOSE</div>
-    </div>
-  </div>
-  <div id="touch"><button id="tl" aria-label="Left flipper"></button><button id="tp" aria-label="Launch or action"></button><button id="tr" aria-label="Right flipper"></button></div>
 </div>
 <script>
 (()=>{
@@ -209,21 +165,31 @@ canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
 const $=s=>document.querySelector(s);
 const shell=$("#shell"),canvas=$("#c"),ctx=canvas.getContext("2d",{alpha:false});
 const WORLD={w:960,h:900};
-let scale=1,dpr=1;
+let scale=1,dpr=1,worldOffsetX=0,worldOffsetY=0;
 function resize(){
-  // IMPORTANT: on portrait phones the canvas is only the upper playfield pane;
-  // the lower viewport is a dedicated control deck. Size from the CANVAS box,
-  // not the shell, or the world would be scaled against the entire phone height.
   const r=canvas.getBoundingClientRect();
   dpr=Math.min(2.25,devicePixelRatio||1);
   canvas.width=Math.max(1,Math.round(r.width*dpr));
   canvas.height=Math.max(1,Math.round(r.height*dpr));
+
+  // Largest possible uncropped 16:15 playfield inside the physical screen.
+  // The canvas itself still fills the entire phone/tablet viewport.
   scale=Math.min(r.width/WORLD.w,r.height/WORLD.h);
-  ctx.setTransform(scale*dpr,0,0,scale*dpr,0,0);
+  worldOffsetX=(r.width-WORLD.w*scale)*.5;
+  worldOffsetY=(r.height-WORLD.h*scale)*.5;
+  ctx.setTransform(
+    scale*dpr,0,0,scale*dpr,
+    worldOffsetX*dpr,worldOffsetY*dpr
+  );
   ctx.imageSmoothingEnabled=true;
 }
-new ResizeObserver(resize).observe(shell);
-addEventListener("orientationchange",()=>setTimeout(resize,80),{passive:true});
+const viewportResizeObserver=new ResizeObserver(resize);
+viewportResizeObserver.observe(shell);
+viewportResizeObserver.observe(canvas);
+addEventListener("orientationchange",()=>{
+  setTimeout(resize,60);
+  setTimeout(resize,240);
+},{passive:true});
 if(window.visualViewport)visualViewport.addEventListener("resize",resize,{passive:true});
 resize();
 
@@ -602,7 +568,7 @@ const MINI_SAVE_KEY="pinballSynthMiniGameV8";
 
 function defaultMiniSave(){
   return {
-    version:16,
+    version:18,
     stage:"BREAKOUT",
     gameMode:"A",
     brokenMask:0,
@@ -621,8 +587,6 @@ function defaultMiniSave(){
     storyStage:0,
     storyClears:0,
     encoreIndex:0,
-    fatherPoints:0,
-    letterRead:false,
     stagePerfects:{},
     arcadeCheckpoints:{},
     raceResume:{distanceM:0,checkpoints:0,combo:0,nearMisses:0,crashes:0},
@@ -651,7 +615,10 @@ function loadMiniSave(){
     const inferredMask=clearedForMusic<=0?0:((1<<clearedForMusic)-1);
     miniSave.musicMask=((miniSave.musicMask|0)|inferredMask)&0x3ff;
     if(clearedForMusic<10)miniSave.musicMask&=~(1<<9);
-    miniSave.version=16;
+    // V25: the removed legacy ending system was removed entirely.
+    delete miniSave.legacyPointsRemoved;
+    delete miniSave.legacyReadRemoved;
+    miniSave.version=18;
   }catch(_){
     miniSave=defaultMiniSave();
   }
@@ -659,7 +626,7 @@ function loadMiniSave(){
 }
 
 function writeMiniSave(reason="AUTO"){
-  miniSave.version=13;
+  miniSave.version=17;
   miniSave.gameMode=state?.game||miniSave.gameMode||"A";
   miniSave.lastSavedAt=Date.now();
   miniSave.saveSerial=(miniSave.saveSerial|0)+1;
@@ -2822,7 +2789,7 @@ function scheduleKingdomReward(step,bar,whenMs,snap){
 
 
 function scheduleSpectacleBody(step,bar,whenMs,snap){
-  if(step!==0||state.mode===MODE.TITLE||fatherEnding.active)return;
+  if(step!==0||state.mode===MODE.TITLE)return;
   const s=spectacleLevel(whenMs);
   if(s<.30)return;
   const root=chordTone(0,1,snap),fifth=chordTone(4,1,snap),third=chordTone(2,2,snap);
@@ -2847,7 +2814,7 @@ function scheduleStoryMemory(step,bar,whenMs,snap){
   const cleared=clamp(miniSave.storyStage|0,0,7);
   if(cleared<=0||state.mode!==MODE.PLAY)return;
 
-  // Father-memory layer: intentionally tiny. It should feel "remembered",
+  // Story-memory layer: intentionally tiny. It should feel remembered,
   // not like another foreground instrument.
   if(cleared>=2 && step===14 && bar%4===3){
     chipPulse(chordTone(2,4,snap),.075,whenMs,.045,.34,.28);
@@ -3389,7 +3356,7 @@ const HARMONY_PROGRESSIONS=[
   [8,8,9,9,1,1,2,2, 8,8,9,9,3,3,2,2],
   // 280,000+: modulation into Cm/Ab/Eb/Gm — darker memory chapter.
   [12,12,13,13,11,11,10,10, 12,12,14,14,13,13,10,10],
-  // 420,000+: D/Bm/G/A — brighter final ascent before the letter.
+  // 420,000+: D/Bm/G/A — brighter final ascent through stage fragments.
   [15,15,17,17,18,18,16,16, 15,15,18,18,16,16,16,16]
 ];
 function harmonyChapterForScore(score=state.score){
@@ -4084,114 +4051,14 @@ function gameMultiplier(now){
   return state.mult*surge;
 }
 
-const FATHER_UNLOCK_POINTS=500000;
-const fatherEnding={
-  active:false,
-  startAt:0,
-  letterShown:false,
-  audioFaded:false,
-  reachedAt:0
-};
-
-function beginFatherEnding(now){
-  if(fatherEnding.active)return;
-  fatherEnding.active=true;
-  fatherEnding.startAt=now;
-  fatherEnding.reachedAt=now;
-  fatherEnding.letterShown=false;
-  fatherEnding.audioFaded=false;
-
-  // This is deliberately the opposite of JUICE ENGINE:
-  // no explosion, no score pop, no fanfare.
-  leftDown=false;
-  rightDown=false;
-  bonusJumpDown=false;
-  bonusJumpPressed=false;
-  arcadeLeftPressed=false;
-  arcadeRightPressed=false;
-  arcadeActionPressed=false;
-  arcadeActionDown=false;
-
-  // Let the current sound dissolve instead of cutting instantly.
-  if(audioReady&&master){
-    const t=AC.currentTime;
-    master.gain.cancelScheduledValues(t);
-    master.gain.setValueAtTime(Math.max(.0001,master.gain.value),t);
-    master.gain.exponentialRampToValueAtTime(.0001,t+4.25);
-    fatherEnding.audioFaded=true;
-  }
-}
-
-function fatherEndingProgress(now){
-  if(!fatherEnding.active)return 0;
-  return clamp((now-fatherEnding.startAt)/4300,0,1);
-}
-
-function updateFatherEnding(now){
-  if(!fatherEnding.active)return;
-  const elapsed=now-fatherEnding.startAt;
-
-  if(elapsed>=4550&&!fatherEnding.letterShown){
-    fatherEnding.letterShown=true;
-    miniSave.letterRead=true;
-    writeMiniSave();
-
-    const letter=$("#letter");
-    letter.classList.remove("open");
-    letter.classList.add("cinematic");
-    letter.classList.remove("show");
-
-    // Force a layout frame so opacity transition is actually visible.
-    requestAnimationFrame(()=>requestAnimationFrame(()=>{
-      letter.classList.add("show");
-    }));
-  }
-}
-
-function drawFatherEnding(now){
-  if(!fatherEnding.active)return;
-  const p=fatherEndingProgress(now);
-
-  // Slow black-out. First half still lets the player recognize the table,
-  // final second becomes almost completely black.
-  const eased=1-Math.pow(1-p,2.4);
-  ctx.save();
-  ctx.globalAlpha=clamp(eased*1.04,0,1);
-  rect(0,0,960,900,"#000");
-  ctx.restore();
-
-  // Tiny acknowledgement only at the beginning, then it disappears.
-  if(p<.46){
-    const a=clamp(1-p/.46,0,1);
-    ctx.save();
-    ctx.globalAlpha=a*.72;
-    text("500,000",480,446,8,C.paper,"center",700);
-    ctx.restore();
-  }
-}
-
 function addScore(points,now){
   const beforeTier=scoreEmotionTier(state.score);
   const awarded=Math.round(points*gameMultiplier(now));
   state.score+=awarded;
 
-  const beforeFather=miniSave.fatherPoints|0;
-  miniSave.fatherPoints=Math.min(FATHER_UNLOCK_POINTS,beforeFather+Math.max(0,awarded));
-
-  // Persist every 5,000 points, and always persist the unlock itself.
-  if(Math.floor(beforeFather/5000)!==Math.floor((miniSave.fatherPoints|0)/5000) ||
-     miniSave.fatherPoints>=FATHER_UNLOCK_POINTS){
-    writeMiniSave();
-  }
-
-  if(beforeFather<FATHER_UNLOCK_POINTS &&
-     (miniSave.fatherPoints|0)>=FATHER_UNLOCK_POINTS){
-    beginFatherEnding(now);
-  }
-
   const afterTier=scoreEmotionTier(state.score);
   song.emotionPeak=Math.max(song.emotionPeak,scoreEmotion(state.score));
-  if(afterTier>beforeTier&&!fatherEnding.active)triggerEmotionTier(afterTier,now);
+  if(afterTier>beforeTier)triggerEmotionTier(afterTier,now);
 }
 
 /* ============================================================
@@ -9835,7 +9702,15 @@ function overlay(now){
   if(state.mult>1)text(`${state.lastShot}  ×${state.mult}`,885,132,7,C.accent,"right");
 }
 function render(now){
-  ctx.setTransform(scale*dpr,0,0,scale*dpr,0,0);
+  // Paint the complete physical viewport first, then center the fixed 960×900 world.
+  // This keeps the browser/controller chrome gone without stretching pinball geometry.
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.fillStyle="#050608";
+  ctx.fillRect(0,0,canvas.width/dpr,canvas.height/dpr);
+  ctx.setTransform(
+    scale*dpr,0,0,scale*dpr,
+    worldOffsetX*dpr,worldOffsetY*dpr
+  );
   ctx.save();ctx.translate(JUICE.shakeX,JUICE.shakeY);
   if(state.mode===MODE.BONUS)drawBonus();
   else if(state.screen===SCREEN.LOWER)drawLower();
@@ -9858,12 +9733,11 @@ function render(now){
 
   ctx.restore();
   drawJuice();
-  drawFatherEnding(now);
 }
 
 /* ---------------- INPUT / LOOP ---------------- */
 let menu=0;
-let titleOptions=["CONTINUE","NEW_A","NEW_B","LETTER"];
+let titleOptions=["CONTINUE","NEW_A","NEW_B"];
 
 function titleHasSave(){
   try{
@@ -9878,7 +9752,6 @@ function titleHasSave(){
       !!s.kingdomCleared ||
       (s.bonusTier|0)>0 ||
       (s.storyStage|0)>0 ||
-      (s.fatherPoints|0)>0 ||
       (s.arcadeCheckpoints&&Object.keys(s.arcadeCheckpoints).length>0)
     );
   }catch(_){return false}
@@ -9888,44 +9761,35 @@ function renderSaveInfo(){
   const el=$("#saveInfo");
   if(!el)return;
   loadMiniSave();
-  const pts=miniSave.fatherPoints|0;
   const stage=clamp(miniSave.storyStage|0,0,STORY_STAGES.length);
 
   if(!titleHasSave()){
-    el.innerHTML=`SAVE — EMPTY<br>STAGE 1 / ${STORY_STAGES.length} · LETTER 0 / 500,000 P`;
+    el.innerHTML=`SAVE — EMPTY<br>STAGE 1 / ${STORY_STAGES.length}`;
     return;
   }
   const stageText=stage>=STORY_STAGES.length?"ALL STAGES CLEAR":`STAGE ${stage+1} / ${STORY_STAGES.length}`;
   const last=miniSave.lastStageId||currentStoryDef()?.id||"BREAKOUT";
-  el.innerHTML=`${stageText} · AUTO SAVE ON<br>${last} · 父からの手紙 ${pts.toLocaleString()} / 500,000 P`;
+  el.innerHTML=`${stageText} · AUTO SAVE ON<br>${last}`;
 }
 
 function menuRender(){
   const has=titleHasSave();
   loadMiniSave();
-  const unlocked=(miniSave.fatherPoints|0)>=FATHER_UNLOCK_POINTS;
 
   $("#mContinue").classList.toggle("on",menu===0);
   $("#mNewA").classList.toggle("on",menu===1);
   $("#mNewB").classList.toggle("on",menu===2);
-  $("#mLetter").classList.toggle("on",menu===3);
 
   $("#mContinue").classList.toggle("disabled",!has);
-  $("#mLetter").classList.toggle("disabled",!unlocked);
-  $("#mLetter").textContent=unlocked
-    ?"父からの手紙 — 読む"
-    :`父からの手紙 — ${(miniSave.fatherPoints|0).toLocaleString()} / 500,000 POINTS`;
   renderSaveInfo();
 }
 
 function selectTitle(delta){
   loadMiniSave();
-  const unlocked=(miniSave.fatherPoints|0)>=FATHER_UNLOCK_POINTS;
   let next=menu;
-  for(let i=0;i<4;i++){
-    next=(next+delta+4)%4;
+  for(let i=0;i<3;i++){
+    next=(next+delta+3)%3;
     if(next===0&&!titleHasSave())continue;
-    if(next===3&&!unlocked)continue;
     menu=next;break;
   }
   menuRender();
@@ -9937,32 +9801,8 @@ function hardResetMiniSave(){
 }
 
 
-function openFatherLetter(){
-  loadMiniSave();
-  if((miniSave.fatherPoints|0)<FATHER_UNLOCK_POINTS)return false;
-  miniSave.letterRead=true;writeMiniSave();
-
-  const letter=$("#letter");
-  letter.classList.remove("cinematic","show");
-  letter.classList.add("open");
-  return true;
-}
-function closeFatherLetter(){
-  const letter=$("#letter");
-  letter.classList.remove("open","cinematic","show");
-
-  if(fatherEnding.active){
-    fatherEnding.active=false;
-    fatherEnding.letterShown=false;
-    state.mode=MODE.TITLE;
-    $("#title").classList.remove("hidden");
-  }
-  menuRender();
-}
-$("#letter").addEventListener("click",closeFatherLetter);
 
 async function startGame(option=titleOptions[menu]){
-  if(option==="LETTER"){openFatherLetter();return}
   initAudio();
   try{await AC.resume()}catch(_){}
   if(audioReady&&master){
@@ -10016,14 +9856,6 @@ async function startGame(option=titleOptions[menu]){
 function key(e,down){
   const k=e.key.toLowerCase();
 
-  if(fatherEnding.active&&!fatherEnding.letterShown){
-    e.preventDefault();
-    return;
-  }
-  if($("#letter").classList.contains("open")){
-    if(down&&!e.repeat&&(e.code==="Space"||e.key==="Enter"||e.key==="Escape"))closeFatherLetter();
-    e.preventDefault();return;
-  }
   if(state.mode===MODE.TITLE){
     if(down&&!e.repeat&&["a","arrowleft","arrowup"].includes(k))selectTitle(-1);
     if(down&&!e.repeat&&["d","arrowright","arrowdown"].includes(k))selectTitle(1);
@@ -10088,7 +9920,6 @@ addEventListener("blur",()=>{
 $("#mContinue").addEventListener("click",e=>{e.stopPropagation();if(titleHasSave()){menu=0;menuRender();startGame("CONTINUE")}});
 $("#mNewA").addEventListener("click",e=>{e.stopPropagation();menu=1;menuRender();startGame("NEW_A")});
 $("#mNewB").addEventListener("click",e=>{e.stopPropagation();menu=2;menuRender();startGame("NEW_B")});
-$("#mLetter").addEventListener("click",e=>{e.stopPropagation();loadMiniSave();if((miniSave.fatherPoints|0)>=500000){menu=3;menuRender();openFatherLetter()}});
 
 function exportMiniSaveBackup(){
   loadMiniSave();
@@ -10131,77 +9962,153 @@ $("#loadBackup").addEventListener("click",e=>{e.stopPropagation();$("#saveFileIn
 $("#saveFileInput").addEventListener("change",async e=>{e.stopPropagation();const f=e.target.files?.[0];await importMiniSaveBackup(f);e.target.value=""});
 $("#title").addEventListener("click",e=>{if(e.target.closest("#titleMenu")||e.target.closest("#saveTools"))return;startGame(titleOptions[menu])});
 menuRender();
-function bind(id,on,off){
-  const el=$(id);
-  let activePointers=new Set();
-  el.addEventListener("pointerdown",e=>{
-    e.preventDefault();activePointers.add(e.pointerId);on();
-    try{el.setPointerCapture(e.pointerId)}catch(_){}
-  },{passive:false});
-  ["pointerup","pointercancel","lostpointercapture"].forEach(ev=>el.addEventListener(ev,e=>{
-    e.preventDefault();activePointers.delete(e.pointerId);if(activePointers.size===0)off();
-  },{passive:false}));
+/* ------------------------------------------------------------
+   V26 DIRECT SCREEN INPUT
+   No visual controller. Multi-touch works directly on the canvas.
+
+   LEFT THIRD   -> A / left flipper
+   CENTER THIRD -> SPACE / launch / action
+   RIGHT THIRD  -> D / right flipper
+   ------------------------------------------------------------ */
+const screenPointers=new Map();
+const screenZoneCounts={left:0,action:0,right:0};
+let fullscreenAttempted=false;
+
+function tryImmersiveFullscreen(){
+  if(fullscreenAttempted||document.fullscreenElement)return;
+  fullscreenAttempted=true;
+  const el=document.documentElement;
+  try{
+    const p=el.requestFullscreen?.({navigationUI:"hide"})
+      || el.webkitRequestFullscreen?.();
+    if(p&&typeof p.catch==="function")p.catch(()=>{});
+  }catch(_){}
+  // iOS Safari does not expose arbitrary-element fullscreen on every version.
+  // viewport-fit + fixed 100dvh still provides the maximum browser viewport.
+  try{window.scrollTo(0,1)}catch(_){}
 }
-document.addEventListener("touchmove",e=>e.preventDefault(),{passive:false});
-addEventListener("pointerup",e=>{
-  // Safety release for mobile browsers that occasionally transfer capture
-  // during an orientation/UI-bar resize.
-  if(e.pointerType==="touch"||e.pointerType==="pen"){
-    if(!e.buttons){
-      // Individual buttons still own normal release; this only clears truly
-      // orphaned states after viewport changes.
-      if(!document.querySelector("#tl:active"))leftDown=false;
-      if(!document.querySelector("#tr:active"))rightDown=false;
+
+function screenZoneFromPointer(e){
+  const r=canvas.getBoundingClientRect();
+  const x=clamp((e.clientX-r.left)/Math.max(1,r.width),0,1);
+  if(x<.34)return "left";
+  if(x>.66)return "right";
+  return "action";
+}
+
+function screenZoneOn(zone){
+  screenZoneCounts[zone]++;
+  if(screenZoneCounts[zone]>1)return;
+
+  if(zone==="left"){
+    if(!leftDown&&state.mode===MODE.BONUS)arcadeLeftPressed=true;
+    if(!leftDown&&state.mode===MODE.PLAY){
+      const f=state.screen===SCREEN.UPPER?FL.upperL:FL.lowerL;
+      juiceReward("flip",f.x,f.y,.42,"");
     }
+    leftDown=true;
+    return;
   }
-},{passive:true});
-bind("#tl",()=>{
-  if(!leftDown&&state.mode===MODE.BONUS)arcadeLeftPressed=true;
-  if(!leftDown&&state.mode===MODE.PLAY){
-    const f=state.screen===SCREEN.UPPER?FL.upperL:FL.lowerL;juiceReward("flip",f.x,f.y,.42,"");
+
+  if(zone==="right"){
+    if(!rightDown&&state.mode===MODE.BONUS)arcadeRightPressed=true;
+    if(!rightDown&&state.mode===MODE.PLAY){
+      const f=state.screen===SCREEN.UPPER?FL.upperR:FL.lowerR;
+      juiceReward("flip",f.x,f.y,.42,"");
+    }
+    rightDown=true;
+    return;
   }
-  leftDown=true;
-},()=>leftDown=false);
-bind("#tr",()=>{
-  if(!rightDown&&state.mode===MODE.BONUS)arcadeRightPressed=true;
-  if(!rightDown&&state.mode===MODE.PLAY){
-    const f=state.screen===SCREEN.UPPER?FL.upperR:FL.lowerR;juiceReward("flip",f.x,f.y,.42,"");
+
+  if(state.mode===MODE.BONUS){
+    arcadeActionDown=true;
+    arcadeActionPressed=true;
+    if(bonusGame.stage==="KINGDOM"){
+      bonusJumpDown=true;
+      bonusJumpPressed=true;
+    }
+  }else{
+    beginCharge();
   }
-  rightDown=true;
-},()=>rightDown=false);
-bind("#tp",
-  ()=>{
-    if(state.mode===MODE.BONUS){
-      arcadeActionDown=true;
-      arcadeActionPressed=true;
-      if(bonusGame.stage==="KINGDOM"){
-        bonusJumpDown=true;
-        bonusJumpPressed=true;
-      }
-    }else beginCharge();
-  },
-  ()=>{
-    if(state.mode===MODE.BONUS){
-      arcadeActionDown=false;
-      if(bonusGame.stage==="KINGDOM")bonusJumpDown=false;
-    }else releaseCharge();
+}
+
+function screenZoneOff(zone){
+  screenZoneCounts[zone]=Math.max(0,screenZoneCounts[zone]-1);
+  if(screenZoneCounts[zone]>0)return;
+
+  if(zone==="left"){
+    leftDown=false;
+    return;
   }
+  if(zone==="right"){
+    rightDown=false;
+    return;
+  }
+
+  if(state.mode===MODE.BONUS){
+    arcadeActionDown=false;
+    if(bonusGame.stage==="KINGDOM")bonusJumpDown=false;
+  }else{
+    releaseCharge();
+  }
+}
+
+canvas.addEventListener("pointerdown",e=>{
+  // Mouse remains usable for desktop testing; touch/pen get identical behavior.
+  e.preventDefault();
+  tryImmersiveFullscreen();
+  const zone=screenZoneFromPointer(e);
+  screenPointers.set(e.pointerId,zone);
+  screenZoneOn(zone);
+  try{canvas.setPointerCapture(e.pointerId)}catch(_){}
+},{passive:false});
+
+canvas.addEventListener("pointermove",e=>{
+  if(!screenPointers.has(e.pointerId))return;
+  e.preventDefault();
+  const oldZone=screenPointers.get(e.pointerId);
+  const newZone=screenZoneFromPointer(e);
+  if(oldZone===newZone)return;
+  screenZoneOff(oldZone);
+  screenPointers.set(e.pointerId,newZone);
+  screenZoneOn(newZone);
+},{passive:false});
+
+function releaseScreenPointer(e){
+  if(!screenPointers.has(e.pointerId))return;
+  e.preventDefault();
+  const zone=screenPointers.get(e.pointerId);
+  screenPointers.delete(e.pointerId);
+  screenZoneOff(zone);
+}
+["pointerup","pointercancel","lostpointercapture"].forEach(ev=>
+  canvas.addEventListener(ev,releaseScreenPointer,{passive:false})
 );
+
+function clearDirectTouch(){
+  screenPointers.clear();
+  screenZoneCounts.left=screenZoneCounts.action=screenZoneCounts.right=0;
+  leftDown=rightDown=false;
+  arcadeActionDown=false;
+  bonusJumpDown=false;
+}
+addEventListener("blur",clearDirectTouch);
+addEventListener("pagehide",clearDirectTouch);
+document.addEventListener("visibilitychange",()=>{
+  if(document.hidden)clearDirectTouch();
+});
+document.addEventListener("touchmove",e=>e.preventDefault(),{passive:false});
+
+// Any first deliberate user gesture may request browser fullscreen.
+// Title/menu controls still receive their normal click afterward.
+document.addEventListener("pointerdown",e=>{
+  if(e.pointerType==="touch"||e.pointerType==="pen")tryImmersiveFullscreen();
+},{capture:true,passive:true});
 
 let last=nowMs(),acc=0;const FIX=1/240;
 function frame(now){
   const dt=clamp((now-last)/1000,0,.05);last=now;
   updateJuice(dt);
-
-  if(fatherEnding.active){
-    // Freeze all game simulation at the exact point the target was reached.
-    // Only the cinematic and remaining audio tails continue.
-    acc=0;
-    updateFatherEnding(now);
-    render(now);
-    requestAnimationFrame(frame);
-    return;
-  }
 
   acc+=dt;
   let n=0;
@@ -10560,8 +10467,6 @@ window.__PINBALL_TEST__={
   darumaInit,darumaUpdate,darumaStrike,drawDaruma,darumaOffset,darumaExposure,darumaTargetSide,
   setArcadeTestInput:(left,right,action)=>{arcadeLeftPressed=!!left;arcadeRightPressed=!!right;arcadeActionPressed=!!action},
   upperCircleContact,resolveUpperCircleExact,sweptCircleTOI,upperBumperCandidate,physicalUpperGateReturn,
-  openFatherLetter,closeFatherLetter,
-  FATHER_UNLOCK_POINTS,fatherEnding,beginFatherEnding,updateFatherEnding,fatherEndingProgress,
   setKeys:(l,r)=>{leftDown=l;rightDown=r},
   pressBonusJump:()=>{bonusJumpDown=true;bonusJumpPressed=true},
   releaseBonusJump:()=>{bonusJumpDown=false},
@@ -11355,7 +11260,7 @@ voicing, register, density and compatible variation.
 -->
 
 <!--
-v17.1 FATHER ENDING / CONSTELLATION
+v17.1 LEGACY ENDING REMOVED / CONSTELLATION
 - Upper collision reliability: visible hit radius = physics radius, swept-circle anti-tunneling, gentle aim assist.
 - Upper is now the long-form WORLD ENGINE.
 - DIVE / DRIFT / ASCEND each select a curated soundscape at the next bar.
@@ -11367,7 +11272,7 @@ v17.1 FATHER ENDING / CONSTELLATION
 -->
 
 <!--
-v17.1 FATHER ENDING
+v17.1 LEGACY ENDING REMOVED
 
 The supplied touch:waves source was treated as an architectural reference,
 not copied as a visual/audio asset.
@@ -11411,7 +11316,7 @@ THE SYSTEM IS HEAVILY CURATING THE RESULT.
 -->
 
 <!--
-v17.1 FATHER ENDING / RESONANCE
+v17.1 LEGACY ENDING REMOVED / RESONANCE
 
 NEW PRIORITY:
 "IF YOU HIT IT, IT SHOULD ANSWER."
@@ -11447,7 +11352,7 @@ and richer reinterpretation of the same safe material.
 -->
 
 <!--
-v17.1 FATHER ENDING / BREAKOUT GROOVE
+v17.1 LEGACY ENDING REMOVED / BREAKOUT GROOVE
 
 MINI-GAME RESET:
 C RESCUE has been replaced by BREAKOUT.
@@ -11475,9 +11380,9 @@ ABSOLUTE RHYTHM SAFETY:
 The player controls ARRANGEMENT DENSITY.
 The engine controls RHYTHM.
 -->
-\n<!--\nv17.1 FATHER ENDING / UPPER REACTOR\nDRUM ROOT CAUSE: CLOSED HAT was high-pass 5.4kHz -> global ambient low-pass; other parts were orders of magnitude too quiet. Timing audit had not measured audibility.\nFIX: dedicated drum bus/compression, stronger transient envelopes, per-part counters, bar-boundary LIVE feedback.\nUPPER 15 METHODS: immediate signature; energy meter; chain; contribution text; resonance charge; surge jackpot; drum mix modifier; longer tails; DIVE sub stem; DRIFT stereo echo stem; ASCEND air stem; register/spatial identity; filter transform; reverb/delay mastery transform; BLOOM full-field surge.\n-->\n
+\n<!--\nv17.1 LEGACY ENDING REMOVED / UPPER REACTOR\nDRUM ROOT CAUSE: CLOSED HAT was high-pass 5.4kHz -> global ambient low-pass; other parts were orders of magnitude too quiet. Timing audit had not measured audibility.\nFIX: dedicated drum bus/compression, stronger transient envelopes, per-part counters, bar-boundary LIVE feedback.\nUPPER 15 METHODS: immediate signature; energy meter; chain; contribution text; resonance charge; surge jackpot; drum mix modifier; longer tails; DIVE sub stem; DRIFT stereo echo stem; ASCEND air stem; register/spatial identity; filter transform; reverb/delay mastery transform; BLOOM full-field surge.\n-->\n
 <!--
-v17.1 FATHER ENDING.1 / DEEP MELLOW
+v17.1 LEGACY ENDING REMOVED / DEEP MELLOW
 
 LOW-END REDESIGN
 - SUB BUS: pure sine low-end -> dedicated compressor -> master
@@ -11502,7 +11407,7 @@ before the routing graph is connected.
 -->
 
 <!--
-v17.1 FATHER ENDING / DEEP AIR
+v17.1 LEGACY ENDING REMOVED / DEEP AIR
 
 PROBLEM:
 v5.1 made the low/body mix thicker by darkening the moving ambient low-pass.
@@ -11530,7 +11435,7 @@ No rhythmic timing source was changed.
 -->
 
 <!--
-v17.1 FATHER ENDING / DANCE DRIVE
+v17.1 LEGACY ENDING REMOVED / DANCE DRIVE
 
 DANCE-MUSIC TUNING
 
@@ -12023,10 +11928,10 @@ ARCADE 15 SELECTION UI IS NO LONGER REACHABLE.
 C GATE ALWAYS STARTS THE NEXT STORY STAGE.
 AFTER ALL 10 STAGES, C GATE RUNS FIXED-ORDER ENCORE CHALLENGES.
 
-FATHER'S LETTER
+REMOVED LEGACY ENDING
 - visible from title from first boot
 - explicitly says 500,000 POINTS
-- lifetime score stored in miniSave.fatherPoints
+- lifetime score stored in miniSave.legacyPointsRemoved
 - unlocks at 500,000
 - exact approved Japanese letter included
 - all normal score awards contribute
@@ -12081,37 +11986,11 @@ SOUND
 - master transport still owns rhythmic onset
 
 STORY
-The father built the game.
+Legacy narrative ending removed.
 The nostalgic sound palette is diegetic: fragments of the old home.
-Story is suggested through stage fragments, never explained before the letter.
+Story is suggested through stage fragments, never explained through stage fragments.
 -->
 
-<!--
-V17.1 / FATHER ENDING
-
-FATHER'S LETTER UNLOCK
-- lifetime target changed 50,000 -> 500,000 POINTS
-- visible from title from first boot
-- fatherPoints capped at 500,000
-- score persisted every 5,000 points
-
-AUTOMATIC ENDING AT 500,000
-1. the exact scoring frame is preserved
-2. all gameplay simulation freezes
-3. no JUICE explosion / no fanfare
-4. master audio dissolves exponentially over 4.25 seconds
-5. canvas slowly fades to black over ~4.3 seconds
-6. a very small "500,000" appears briefly, then disappears
-7. after ~4.55 seconds the Father's Letter layer appears
-8. letter itself fades/raises into view over 3.2 seconds
-9. closing the letter returns to the title
-10. subsequent title-menu reads open the letter immediately
-
-DESIGN INTENT
-The entire game trains the player to expect audiovisual reward.
-The 500,000-point reward deliberately removes that language.
-Silence + darkness become the strongest reward in the game.
--->
 
 <!--
 V17.4 / SPECTACLE + SIGNAL MAZE
@@ -12384,4 +12263,58 @@ RELIABILITY
 - no hold-state dependency
 - V23 DARUMA checkpoint is intentionally discarded on migration
 - daruma init/update/strike/draw are exposed in __PINBALL_TEST__ for runtime smoke tests
+-->
+
+<!--
+V25 / LEGACY ENDING REMOVAL
+
+Removed completely:
+- fourth title-menu narrative option
+- dedicated narrative overlay DOM and CSS
+- 500,000-point unlock counter
+- automatic blackout / frozen-input ending
+- overlay open/close handlers
+- obsolete save flags
+- title save-info progress for the removed ending
+- ending frame branch and test hooks
+
+Old saves remain compatible. Obsolete fields are discarded on load.
+Scoring now continues normally beyond 500,000 points with no forced ending.
+-->
+
+<!--
+V26 / FULLSCREEN DIRECT TOUCH
+
+MOBILE / TABLET:
+- virtual controller DOM removed
+- controller CSS removed
+- shell + canvas occupy the entire viewport
+- 100dvh / 100svh + safe-area aware title
+- viewport-fit=cover
+- iOS / Android standalone-capable meta tags
+- first touch requests Fullscreen API where the browser permits it
+- iOS fallback uses the maximum fixed dynamic viewport
+
+DIRECT TOUCH:
+- left third of the screen = LEFT / A / left flipper
+- center third = ACTION / SPACE / launch
+- right third = RIGHT / D / right flipper
+- invisible interaction: no buttons, labels, controller deck, or overlay
+- multi-touch supported
+- sliding a finger between thirds transfers the held input
+- pointercancel / blur / pagehide / visibilitychange safely release all controls
+
+RENDER:
+- world remains 960×900 internally
+- it is scaled to the largest uncropped size and centered inside the physical viewport
+- no gameplay geometry is stretched
+-->
+
+<!--
+V26.1 / CENTERED FULL-VIEWPORT RENDER FIX
+- render() no longer overwrites the responsive world offsets
+- entire physical canvas is cleared/flood-filled every frame
+- 960×900 world stays centered at the largest uncropped scale
+- ResizeObserver watches both shell and canvas
+- orientation change performs a fast and a delayed viewport recalculation
 -->
