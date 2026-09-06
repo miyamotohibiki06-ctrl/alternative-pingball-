@@ -486,7 +486,7 @@ canvas{
       </div>
       <div class="mobileFooter">
         <span id="mHudStage">STAGE 1 / 10</span>
-        <span>DIRECT TOUCH SURFACE</span>
+        <span id="mHudAudio">HQ AUDIO</span>
       </div>
     </div>
 
@@ -1269,15 +1269,15 @@ function maybeAdvanceScoreAct(step,bar,now=nowMs()){
 
 const MAIN_THEME=[
   // [position in 2 bars (0..31), chord-degree, octave, length16, accent]
-  [0,0,3,2,1.00],
-  [3,2,3,1,.82],
-  [6,1,3,2,.76],
-  [10,4,3,2,.94],
-  [14,2,3,1,.72],
-  [18,0,4,2,1.00],
-  [22,3,3,2,.78],
-  [27,2,3,1,.86],
-  [30,1,3,2,.72]
+  [0,0,2,2,1.00],
+  [3,2,2,1,.82],
+  [6,1,2,2,.76],
+  [10,4,2,2,.94],
+  [14,2,2,1,.72],
+  [18,0,3,2,1.00],
+  [22,3,2,2,.78],
+  [27,2,2,1,.86],
+  [30,1,2,2,.72]
 ];
 function mainThemeWindow(bar=song.bar){
   return state.mode===MODE.PLAY && song.scoreAct>=1 && ((bar%8)===4||(bar%8)===5);
@@ -1339,11 +1339,15 @@ function scoreRoleGain(id,bar=song.bar){
   const debut=song.miniMusicDebutBars>0&&song.miniMusicDebutBit===bit;
   if(debut)g=Math.max(g,1.22);
   else if(song.miniMusicDebutBars>0)g*=.32;
-  if(["SHOOTER","GOLDFISH","CRANE"].includes(id)&&!debut){
-    const order=["SHOOTER","GOLDFISH","CRANE"];
+  if(["SHOOTER","GOLDFISH"].includes(id)&&!debut){
+    const order=["SHOOTER","GOLDFISH"];
     const active=order[(Math.floor(bar/2)+song.scoreAct)%order.length];
     if(id!==active)g*=.12;
     if(mainThemeWindow(bar))g*=.16;
+  }
+  if(id==="CRANE"&&!debut){
+    if(mainThemeWindow(bar))g*=.42;
+    if((scoreRoleGain.__homeBassMix||0)>.35)g*=.72;
   }
   return clamp(g,0,1.35);
 }
@@ -3612,8 +3616,10 @@ let dryBus=null,spaceBus=null,drumBus=null,drumComp=null,rev=null,revGain=null;
 let subBus=null,bodyBus=null,subComp=null,bodySat=null;
 let airBus=null,airHP=null,airShelf=null,airComp=null;
 let acidBus=null,acidComp=null,acidTone=null;
-let chipBus=null,chipHP=null,chipLP=null,chipComp=null,masterClip=null;
+let chipBus=null,chipHP=null,chipLP=null,chipComp=null;
+let masterLimiter=null,masterCeiling=null;
 let masterLowShelf=null,masterLowMidCut=null,masterPresence=null,masterHighShelf=null;
+let audioQualityLabel="HQ";
 let delayL=null,delayR=null,delayFbL=null,delayFbR=null,delayPanL=null,delayPanR=null,pumpGain=null;
 let oscA=null,oscB=null,aGain=null,bGain=null,cvGain=null,sub=null,subGain=null,harm=[];
 let sharedNoiseBuffer=null;
@@ -3714,19 +3720,30 @@ function makeImpulse(sec=2.45,decay=2.7){
 }
 function initAudio(){
   if(audioReady)return;
-  AC=new (AudioContext||webkitAudioContext)();
+  const AudioCtx=AudioContext||webkitAudioContext;
+  const coarse=matchMedia("(pointer:coarse)").matches;
+  const cores=Math.max(2,navigator.hardwareConcurrency||4);
+  const requestedRate=(!coarse&&cores>=8)?96000:48000;
+  try{
+    AC=new AudioCtx({latencyHint:"interactive",sampleRate:requestedRate});
+  }catch(_){
+    try{AC=new AudioCtx({latencyHint:"interactive"})}
+    catch(__){AC=new AudioCtx()}
+  }
+  audioQualityLabel=`HQ ${Math.round(AC.sampleRate/1000)}k`;
   initSharedNoiseBuffer();
 
-  // V29 gain staging: headroom first, then controlled saturation at the end.
-  master=AC.createGain();master.gain.value=1.08;
-  dryBus=AC.createGain();dryBus.gain.value=.86;
-  spaceBus=AC.createGain();spaceBus.gain.value=.72;
+  // V32 HQ: transient headroom first.
+  // Density rises through arrangement, not by multiplying every bus.
+  master=AC.createGain();master.gain.value=.78;
+  dryBus=AC.createGain();dryBus.gain.value=.72;
+  spaceBus=AC.createGain();spaceBus.gain.value=.52;
   // Dedicated drum path. v3 sent CLOSED HAT through a 5.4kHz high-pass and
   // then the ambience low-pass, frequently deleting the hat's useful band.
-  drumBus=AC.createGain();drumBus.gain.value=1.08;
+  drumBus=AC.createGain();drumBus.gain.value=.90;
   drumComp=AC.createDynamicsCompressor();
-  drumComp.threshold.value=-24;drumComp.knee.value=12;drumComp.ratio.value=3.2;
-  drumComp.attack.value=.005;drumComp.release.value=.14;
+  drumComp.threshold.value=-11;drumComp.knee.value=8;drumComp.ratio.value=1.55;
+  drumComp.attack.value=.014;drumComp.release.value=.12;
 
   // DEEP MELLOW low-end buses.
   // v5 startup bug fix: these nodes must exist before subBus.connect(...).
@@ -3735,19 +3752,19 @@ function initAudio(){
   subComp=AC.createDynamicsCompressor();
   bodySat=AC.createWaveShaper();
 
-  subBus.gain.value=.88;
-  bodyBus.gain.value=.82;
+  subBus.gain.value=.68;
+  bodyBus.gain.value=.66;
 
-  subComp.threshold.value=-24;
-  subComp.knee.value=18;
-  subComp.ratio.value=3.2;
-  subComp.attack.value=.026;
-  subComp.release.value=.28;
+  subComp.threshold.value=-12;
+  subComp.knee.value=10;
+  subComp.ratio.value=1.65;
+  subComp.attack.value=.030;
+  subComp.release.value=.24;
 
   const satCurve=new Float32Array(2048);
   for(let i=0;i<satCurve.length;i++){
     const x=i/(satCurve.length-1)*2-1;
-    satCurve[i]=Math.tanh(x*1.18)*.90;
+    satCurve[i]=Math.tanh(x*.72)/Math.tanh(.72)*.82;
   }
   bodySat.curve=satCurve;
   bodySat.oversample="2x";
@@ -3759,37 +3776,37 @@ function initAudio(){
   airShelf=AC.createBiquadFilter();
   airComp=AC.createDynamicsCompressor();
 
-  airBus.gain.value=.60;
+  airBus.gain.value=.48;
   airHP.type="highpass";
   airHP.frequency.value=4200;
   airHP.Q.value=.55;
 
   airShelf.type="highshelf";
   airShelf.frequency.value=7600;
-  airShelf.gain.value=2.4;
+  airShelf.gain.value=1.4;
 
-  airComp.threshold.value=-30;
-  airComp.knee.value=22;
-  airComp.ratio.value=1.8;
-  airComp.attack.value=.008;
-  airComp.release.value=.14;
+  airComp.threshold.value=-16;
+  airComp.knee.value=12;
+  airComp.ratio.value=1.35;
+  airComp.attack.value=.015;
+  airComp.release.value=.13;
 
   // ACID DRIVE — dedicated foreground bus.
   acidBus=AC.createGain();
   acidComp=AC.createDynamicsCompressor();
   acidTone=AC.createBiquadFilter();
 
-  acidBus.gain.value=.72;
+  acidBus.gain.value=.56;
 
   acidTone.type="peaking";
   acidTone.frequency.value=1320;
   acidTone.Q.value=.72;
   acidTone.gain.value=1.6;
 
-  acidComp.threshold.value=-22;
-  acidComp.knee.value=16;
-  acidComp.ratio.value=3.0;
-  acidComp.attack.value=.006;
+  acidComp.threshold.value=-12;
+  acidComp.knee.value=10;
+  acidComp.ratio.value=1.55;
+  acidComp.attack.value=.012;
   acidComp.release.value=.11;
 
   // CHIP KINGDOM — narrow, clean digital foreground.
@@ -3798,48 +3815,56 @@ function initAudio(){
   chipLP=AC.createBiquadFilter();
   chipComp=AC.createDynamicsCompressor();
 
-  chipBus.gain.value=.52;
+  chipBus.gain.value=.40;
   chipHP.type="highpass";chipHP.frequency.value=165;chipHP.Q.value=.55;
   chipLP.type="lowpass";chipLP.frequency.value=7600;chipLP.Q.value=.42;
 
-  chipComp.threshold.value=-25;
-  chipComp.knee.value=15;
-  chipComp.ratio.value=2.4;
-  chipComp.attack.value=.004;
-  chipComp.release.value=.10;
-  filter=AC.createBiquadFilter();filter.type="lowpass";filter.frequency.value=3100;filter.Q.value=.58;
-  comp=AC.createDynamicsCompressor();comp.threshold.value=-17;comp.knee.value=14;comp.ratio.value=2.35;comp.attack.value=.012;comp.release.value=.20;
-  masterLowShelf=AC.createBiquadFilter();
-  masterLowShelf.type="lowshelf";masterLowShelf.frequency.value=92;masterLowShelf.gain.value=1.7;
-  masterLowMidCut=AC.createBiquadFilter();
-  masterLowMidCut.type="peaking";masterLowMidCut.frequency.value=315;masterLowMidCut.Q.value=.78;masterLowMidCut.gain.value=-1.8;
-  masterPresence=AC.createBiquadFilter();
-  masterPresence.type="peaking";masterPresence.frequency.value=2700;masterPresence.Q.value=.82;masterPresence.gain.value=1.25;
-  masterHighShelf=AC.createBiquadFilter();
-  masterHighShelf.type="highshelf";masterHighShelf.frequency.value=7800;masterHighShelf.gain.value=1.55;
-  masterClip=AC.createWaveShaper();
-  const masterCurve=new Float32Array(4096);
-  for(let i=0;i<masterCurve.length;i++){
-    const x=i/(masterCurve.length-1)*2-1;
-    masterCurve[i]=Math.tanh(x*1.07)/Math.tanh(1.07);
-  }
-  masterClip.curve=masterCurve;
-  masterClip.oversample="4x";
+  chipComp.threshold.value=-14;
+  chipComp.knee.value=10;
+  chipComp.ratio.value=1.45;
+  chipComp.attack.value=.010;
+  chipComp.release.value=.09;
 
-  rev=AC.createConvolver();rev.buffer=makeImpulse(1.85,3.35);
-  const revHP=AC.createBiquadFilter();revHP.type="highpass";revHP.frequency.value=260;revHP.Q.value=.55;
-  const revLP=AC.createBiquadFilter();revLP.type="lowpass";revLP.frequency.value=6900;revLP.Q.value=.45;
-  revGain=AC.createGain();revGain.gain.value=.24;
+  filter=AC.createBiquadFilter();filter.type="lowpass";filter.frequency.value=5200;filter.Q.value=.46;
+
+  // Gentle glue, then a true peak-control stage. No permanent waveshaper on master.
+  comp=AC.createDynamicsCompressor();
+  comp.threshold.value=-6.5;comp.knee.value=8;comp.ratio.value=1.30;
+  comp.attack.value=.028;comp.release.value=.18;
+
+  masterLowShelf=AC.createBiquadFilter();
+  masterLowShelf.type="lowshelf";masterLowShelf.frequency.value=88;masterLowShelf.gain.value=.75;
+  masterLowMidCut=AC.createBiquadFilter();
+  masterLowMidCut.type="peaking";masterLowMidCut.frequency.value=300;masterLowMidCut.Q.value=.72;masterLowMidCut.gain.value=-1.25;
+  masterPresence=AC.createBiquadFilter();
+  masterPresence.type="peaking";masterPresence.frequency.value=2550;masterPresence.Q.value=.74;masterPresence.gain.value=.45;
+  masterHighShelf=AC.createBiquadFilter();
+  masterHighShelf.type="highshelf";masterHighShelf.frequency.value=8600;masterHighShelf.gain.value=.75;
+
+  masterLimiter=AC.createDynamicsCompressor();
+  masterLimiter.threshold.value=-1.4;
+  masterLimiter.knee.value=0;
+  masterLimiter.ratio.value=20;
+  masterLimiter.attack.value=.0015;
+  masterLimiter.release.value=.070;
+
+  masterCeiling=AC.createGain();
+  masterCeiling.gain.value=.92;
+
+  rev=AC.createConvolver();rev.buffer=makeImpulse(2.10,3.15);
+  const revHP=AC.createBiquadFilter();revHP.type="highpass";revHP.frequency.value=300;revHP.Q.value=.50;
+  const revLP=AC.createBiquadFilter();revLP.type="lowpass";revLP.frequency.value=8800;revLP.Q.value=.38;
+  revGain=AC.createGain();revGain.gain.value=.15;
 
   // Alternating pan-delay sound field. Cross-feedback moves echoes L -> R -> L.
   delayL=AC.createDelay(1.4);delayR=AC.createDelay(1.4);
   // 124 BPM: ~1/8 and dotted-1/8. Tight rhythmic space instead of wash.
   delayL.delayTime.value=.242;delayR.delayTime.value=.363;
   const delayToneL=AC.createBiquadFilter(),delayToneR=AC.createBiquadFilter();
-  delayToneL.type="lowpass";delayToneL.frequency.value=4800;
-  delayToneR.type="lowpass";delayToneR.frequency.value=4200;
+  delayToneL.type="lowpass";delayToneL.frequency.value=7200;
+  delayToneR.type="lowpass";delayToneR.frequency.value=6500;
   delayFbL=AC.createGain();delayFbR=AC.createGain();
-  delayFbL.gain.value=.22;delayFbR.gain.value=.19;
+  delayFbL.gain.value=.16;delayFbR.gain.value=.14;
   delayPanL=AC.createStereoPanner?AC.createStereoPanner():null;
   delayPanR=AC.createStereoPanner?AC.createStereoPanner():null;
   if(delayPanL)delayPanL.pan.value=-.72;
@@ -3877,7 +3902,14 @@ function initAudio(){
 
   dryBus.connect(master);spaceBus.connect(master);
   drumBus.connect(drumComp);drumComp.connect(master);
-  master.connect(masterLowShelf);masterLowShelf.connect(masterLowMidCut);masterLowMidCut.connect(masterPresence);masterPresence.connect(masterHighShelf);masterHighShelf.connect(comp);comp.connect(masterClip);masterClip.connect(AC.destination);
+  master.connect(masterLowShelf);
+  masterLowShelf.connect(masterLowMidCut);
+  masterLowMidCut.connect(masterPresence);
+  masterPresence.connect(masterHighShelf);
+  masterHighShelf.connect(comp);
+  comp.connect(masterLimiter);
+  masterLimiter.connect(masterCeiling);
+  masterCeiling.connect(AC.destination);
 
   // Continuous "air": two soft digital tones only.
   oscA=AC.createOscillator();oscB=AC.createOscillator();
@@ -4120,6 +4152,51 @@ function mellowBodyBass(semi,vel=.4,whenMs=nowMs(),dur=.34,pan=0){
     env.connect(p);p.connect(bodyBus||dryBus);
   }else env.connect(bodyBus||dryBus);
   o1.start(t);o2.start(t);o1.stop(t+dur+.03);o2.stop(t+dur+.03);
+}
+
+
+function lowHookVoice(semi,vel=.36,whenMs=nowMs(),dur=.20,accent=1){
+  if(!audioReady)return;
+  const snap=harmonySnapshotForWhen(whenMs);
+  semi=snapSemiToSnapshot(semi,snap);
+  const t=audioTimeForMs(whenMs);
+  const f=65.406*Math.pow(2,semi/12);
+
+  const o1=AC.createOscillator(),o2=AC.createOscillator();
+  const g1=AC.createGain(),g2=AC.createGain();
+  const hp=AC.createBiquadFilter(),lp=AC.createBiquadFilter(),env=AC.createGain();
+
+  o1.type="triangle";o1.frequency.value=f;
+  o2.type="sine";o2.frequency.value=f*2;
+  g1.gain.value=.82;g2.gain.value=.18;
+
+  // Keep it above the sub-bass and mono/center for a solid headphone image.
+  hp.type="highpass";hp.frequency.value=82;hp.Q.value=.45;
+  lp.type="lowpass";lp.Q.value=1.35;
+  lp.frequency.setValueAtTime(Math.min(2400,820+f*4.0+accent*260),t);
+  lp.frequency.exponentialRampToValueAtTime(Math.max(260,Math.min(760,f*1.8)),t+dur*.82);
+
+  const peak=.024*vel*accent;
+  env.gain.setValueAtTime(.0001,t);
+  env.gain.exponentialRampToValueAtTime(Math.max(.0002,peak),t+.004);
+  env.gain.exponentialRampToValueAtTime(Math.max(.00015,peak*.48),t+dur*.34);
+  env.gain.exponentialRampToValueAtTime(.0001,t+dur);
+
+  o1.connect(g1);o2.connect(g2);g1.connect(hp);g2.connect(hp);hp.connect(lp);lp.connect(env);
+  env.connect(bodyBus||dryBus);
+
+  if(accent>1.02){
+    const click=AC.createOscillator(),cg=AC.createGain(),chp=AC.createBiquadFilter();
+    click.type="sine";click.frequency.value=f*4;
+    chp.type="highpass";chp.frequency.value=900;
+    cg.gain.setValueAtTime(.0018*vel,t);
+    cg.gain.exponentialRampToValueAtTime(.0001,t+.018);
+    click.connect(chp);chp.connect(cg);cg.connect(dryBus);
+    click.start(t);click.stop(t+.022);
+  }
+
+  o1.start(t);o2.start(t);
+  o1.stop(t+dur+.025);o2.stop(t+dur+.025);
 }
 
 function lowWarmPad(semi,vel=.16,whenMs=nowMs(),dur=1.8,pan=0){
@@ -4687,9 +4764,9 @@ function updateInstrument(dt,now){
   const worm=now<song.wormholeUntil?1:0;
   const spectacle=spectacleLevel(now);
   const cutoff=clamp(
-    4550 - mellow*1450 - emotion*700 - worm*850 +
-    (1-y)*460 + glass*500 + state.filterEnv*380 + speed*.020 + spectacle*960 + song.upperMixLift*420,
-    850,6800
+    6100 - mellow*1550 - emotion*620 - worm*720 +
+    (1-y)*620 + glass*700 + state.filterEnv*520 + speed*.022 + spectacle*1250 + song.upperMixLift*520,
+    1050,9600
   );
   filter.frequency.setTargetAtTime(cutoff,AC.currentTime,.11);
   filter.Q.setTargetAtTime(.56+mellow*.28+glass*.16+worm*.22,AC.currentTime,.14);
@@ -4697,19 +4774,20 @@ function updateInstrument(dt,now){
   // After harmony switches, echoes are deliberately cleaned for ~420 ms.
   const chordAge=now-song.harmonyChangedAt;
   const clean=chordAge<420?clamp(chordAge/420,0,1):1;
-  const targetFb=clamp((.18+mellow*.08+emotion*.05+echo*.07+spectacle*.05)*clean,0,.40);
+  const targetFb=clamp((.13+mellow*.045+emotion*.028+echo*.045+spectacle*.025)*clean,0,.29);
   delayFbL.gain.setTargetAtTime(targetFb,AC.currentTime,.08);
   delayFbR.gain.setTargetAtTime(targetFb*.95,AC.currentTime,.08);
-  revGain.gain.setTargetAtTime(.24+mellow*.18+emotion*.12+air*.09+worm*.06+spectacle*.06,AC.currentTime,.18);
+  revGain.gain.setTargetAtTime(.14+mellow*.07+emotion*.04+air*.035+worm*.025+spectacle*.025,AC.currentTime,.22);
 
-  // Global mix reinforcement: more body, width and top-end as the performance heats up.
-  if(subBus)subBus.gain.setTargetAtTime(1.06+spectacle*.50+(song.guidedWorld===0?.12:0)+(song.twPleasureReleaseBars>0?.12:0),AC.currentTime,.18);
-  if(bodyBus)bodyBus.gain.setTargetAtTime(.88+spectacle*.34+(song.worldCommitBars>0?.10:0),AC.currentTime,.20);
-  if(drumBus)drumBus.gain.setTargetAtTime(1.60+clamp(song.drumBuildActive/6,0,1)*.38+spectacle*.25+(state.mode===MODE.BONUS?.08:0),AC.currentTime,.16);
-  if(spaceBus)spaceBus.gain.setTargetAtTime(1.06+spectacle*.18+(song.guidedWorld===1?.05:0)+(song.guidedWorld===2?.08:0),AC.currentTime,.22);
-  if(masterLowShelf)masterLowShelf.gain.setTargetAtTime(3.0+spectacle*4.8+(song.guidedWorld===0?1.0:0),AC.currentTime,.24);
-  if(masterPresence)masterPresence.gain.setTargetAtTime(1.4+spectacle*3.2+(song.guidedWorld===1?.8:0),AC.currentTime,.18);
-  if(masterHighShelf)masterHighShelf.gain.setTargetAtTime(1.8+spectacle*4.2+(song.guidedWorld===2?1.0:0)+(air?.7:0),AC.currentTime,.20);
+  // V32: performance intensity changes spectrum and arrangement, not brute-force gain.
+  if(subBus)subBus.gain.setTargetAtTime(.68+spectacle*.10+(song.guidedWorld===0?.04:0)+(song.twPleasureReleaseBars>0?.035:0),AC.currentTime,.20);
+  if(bodyBus)bodyBus.gain.setTargetAtTime(.66+spectacle*.08+(song.worldCommitBars>0?.035:0),AC.currentTime,.22);
+  if(drumBus)drumBus.gain.setTargetAtTime(.90+clamp(song.drumBuildActive/6,0,1)*.10+spectacle*.06,AC.currentTime,.18);
+  if(spaceBus)spaceBus.gain.setTargetAtTime(.52+spectacle*.055+(song.guidedWorld===2?.035:0),AC.currentTime,.24);
+
+  if(masterLowShelf)masterLowShelf.gain.setTargetAtTime(.65+spectacle*.55+(song.guidedWorld===0?.18:0),AC.currentTime,.28);
+  if(masterPresence)masterPresence.gain.setTargetAtTime(.40+spectacle*.50+(song.guidedWorld===1?.16:0),AC.currentTime,.24);
+  if(masterHighShelf)masterHighShelf.gain.setTargetAtTime(.70+spectacle*.65+(song.guidedWorld===2?.22:0)+(air?.14:0),AC.currentTime,.26);
 
   const chord=currentChord();
   const root=65.406*Math.pow(2,(chord[0]+12)/12);
@@ -6930,7 +7008,7 @@ const STORY_STAGES=[
   {id:"MOLE",name:"もぐらたたき",role:"出たモグラを叩け！",instruction:"左・中央・右、出た場所をそのまま叩け！",controls:"A=左　SPACE=中央　D=右",music:"PERCUSSION",musicText:"反応速度が細かなパーカッションの密度になる",fragment:"ポコポコした音"},
   {id:"HOMERUN",name:"ホームラン競争",role:"5本ホームラン！",instruction:"タイミングを合わせて5本打て！",controls:"A / D でバッター移動　SPACEでスイング",music:"BASSLINE",musicText:"太いベースラインが曲の芯を作る",fragment:"バッティングセンターの打球音"},
   {id:"GOLDFISH",name:"金魚すくい",role:"金魚をすくえ！",instruction:"金魚を8匹すくえ！",controls:"A / D でポイ移動　SPACEですくう",music:"SHIMMER",musicText:"水面のような高音SHIMMERが広がる",fragment:"夏祭りの水面"},
-  {id:"CRANE",name:"クレーンゲーム",role:"景品を取れ！",instruction:"景品を3つ取れ！",controls:"A / D でクレーン移動　SPACEでおろす",music:"HOOK MELODY",musicText:"覚えやすいフックメロディが追加される",fragment:"ゲームセンターの景品"},
+  {id:"CRANE",name:"クレーンゲーム",role:"景品を取れ！",instruction:"景品を3つ取れ！",controls:"A / D でクレーン移動　SPACEでおろす",music:"LOW HOOK",musicText:"低い音域の覚えやすい反復フックが追加される",fragment:"ゲームセンターの景品"},
   {id:"DARUMA",name:"だるま落とし",role:"出っ張った側を直接叩け！",instruction:"左に出たらA、右に出たらD。6段抜け！",controls:"A=左を叩く　D=右を叩く",music:"BREAK FILLS",musicText:"PERFECTの打撃感が曲の節目の爆発的なドラムフィルになる",fragment:"HOME"}
 ];
 
@@ -6995,6 +7073,7 @@ function unlockMiniMusicRole(id,now){
 
 function scheduleMiniGameMusicLayers(step,bar,whenMs,snap){
   if(state.mode!==MODE.PLAY)return;
+  scoreRoleGain.__homeBassMix=miniMusicHas("HOMERUN")?scoreActSpec().bass:0;
 
   // 4 / UFO -> LEAD MELODY. Rotates with SHIMMER / HOOK to protect the top end.
   {
@@ -7049,15 +7128,34 @@ function scheduleMiniGameMusicLayers(step,bar,whenMs,snap){
     }
   }
 
-  // 9 / CRANE -> HOOK. Two-bar hook but only when its top-line slot is active.
+  // 9 / CRANE -> LOW HOOK: memorable, centered, low-mid two-bar motif.
   {
     const mix=scoreRoleGain("CRANE",bar);
     if(mix>.025){
       const local=bar%2*16+step;
-      const hook={0:[0,3],4:[2,3],7:[4,3],10:[2,3],14:[3,4],18:[4,3],22:[2,3],27:[1,3],30:[0,4]};
+      const hook={
+        0:[0,1,2,1.12],
+        3:[0,1,1,.82],
+        6:[2,1,2,1.02],
+        8:[4,0,2,1.16],
+        11:[2,1,1,.88],
+        14:[0,1,2,1.04],
+        18:[0,1,2,1.10],
+        22:[3,1,2,.98],
+        24:[4,0,2,1.12],
+        27:[2,1,1,.90],
+        30:[1,1,2,1.00]
+      };
       if(hook[local]){
-        const [d,oct]=hook[local];
-        chipPulse(chordTone(d,oct,snap),.30*mix,whenMs,.085,(local<16?-.18:.18),.84);
+        const [d,oct,len16,accent]=hook[local];
+        const sixteenth=60000/song.bpm/4;
+        lowHookVoice(
+          chordTone(d,oct,snap),
+          .62*mix,
+          whenMs,
+          Math.max(.11,sixteenth*len16/1000*.88),
+          accent
+        );
       }
     }
   }
@@ -10309,7 +10407,7 @@ function overlay(now){
 const mobileUI={
   root:$("#mobileChrome"),
   mode:$("#mHudMode"),score:$("#mHudScore"),arrange:$("#mHudArrange"),
-  progress:$("#mHudProgress"),role:$("#mHudRole"),stage:$("#mHudStage"),
+  progress:$("#mHudProgress"),role:$("#mHudRole"),stage:$("#mHudStage"),audio:$("#mHudAudio"),
   bars:Array.from(document.querySelectorAll("#mobileWave i")),
   dna:Array.from(document.querySelectorAll(".mobileDNA span")),
   echoes:{
@@ -10338,6 +10436,7 @@ function updateMobileChrome(now){
     mobileUI.role.textContent=state.mode===MODE.BONUS
       ? (def?.music||miniSave.lastMusicRole||"MINIGAME")
       : `${act.change} / ${miniSave.lastMusicRole||"AMBIENT"}`;
+    if(mobileUI.audio)mobileUI.audio.textContent=audioReady?audioQualityLabel:"HQ AUDIO";
     const storyText=stage>=STORY_STAGES.length?"ALL STAGES CLEAR":`STAGE ${stage+1}/${STORY_STAGES.length}`;
     mobileUI.stage.textContent=`${storyText} · ${next===null?"ACT MAX":`NEXT ACT ${next.toLocaleString()}`}`;
 
@@ -11564,3 +11663,29 @@ MASTER GRID:
 - late events are skipped, never replayed
 -->
 \n<!--\nV31.3 / AUDIO-CONTEXT MASTER CLOCK\n\nROOT CAUSE FROM V31.2:\n- getOutputTimestamp() maps audio that is PRESENTED at the output device, not the render clock used for future scheduling.\n- On mobile / Bluetooth this can differ from AC.currentTime by large output latency.\n- The previous Math.max(AC.currentTime+.003, mapped) therefore collapsed multiple future grid notes onto almost the same time.\n\nFIX:\n- AudioContext.currentTime is now the sequencer's master clock.\n- transportNextAudioSec advances by exact 16th-note seconds.\n- performance.now is only derived from audio time for visuals/harmony metadata.\n- one perf/audio anchor is sampled per scheduler frame; no getOutputTimestamp scheduling path remains.\n- stale steps are skipped in AudioContext time, never replayed.\n\nGROOVE CLEANUP:\n- level-1 closed hats are fixed to eighth-note offbeats (2/6/10/14).\n- level-4 open hats replace closed hats instead of stacking a second hat phase.\n- MOLE percussion reinforces the same offbeat and no longer adds off-grid claps.\n- HOMERUN bass syncopation is moved onto the canonical eighth grid.\n- DARUMA fill no longer creates a competing clap pulse.\n-->\n\n<!--\nV31.3b / MOBILE TIMING LOAD REDUCTION\n- closed/open hats, clap, shaker, guided air, chip noise and air noise reuse one pre-generated noise buffer\n- no per-hit random AudioBuffer allocation in the core drum path\n- scheduler look-ahead increased from 120ms to 220ms\n- audioTimeForMs never re-anchors halfway through one composer scheduling pass\n-->\n
+<!--
+V32 / HQ HEADROOM + LOW CATCHY HOOK
+
+REAL HI-RES NOTE:
+- Browser/DAC output format is device-controlled.
+- This build requests 96 kHz on capable desktop hardware and 48 kHz on coarse/mobile devices.
+- The actual AudioContext sample rate is shown as HQ xxk in the smartphone footer.
+
+HEADROOM / QUALITY:
+- master waveshaper removed
+- master gain and all major buses reduced
+- bus compressors changed from heavy control to gentle glue
+- transparent fast peak limiter + 0.92 output ceiling
+- dynamic spectacle no longer boosts drums/sub/EQ by multiple dB
+- main tonal bandwidth opened toward 9.6 kHz
+- reverb/delay bandwidth increased while wet level/feedback decreased
+- low-mid cut retained to keep kick/bass/pad separation
+
+HOOK:
+- CRANE music role renamed LOW HOOK
+- new dedicated centered low-mid synth
+- hook sits above sub-bass, roughly 130–450 Hz depending on chord
+- new two-bar repeated motif is simpler and more memorable
+- hook ducks under HOMERUN bass and the main theme
+- main theme itself is also moved about one octave lower
+-->
